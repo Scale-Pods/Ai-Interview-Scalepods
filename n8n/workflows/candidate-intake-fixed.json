@@ -1,0 +1,257 @@
+{
+  "name": "AI Interviewer - Candidate Intake",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "candidate-intake",
+        "options": {
+          "responseMode": "responseNode"
+        }
+      },
+      "id": "a21d9c3c-2f5e-4f31-969a-ef59d7001ab2",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "webhookId": "36e4a038-59ab-444f-85e8-d93ecd377cd9"
+    },
+    {
+      "parameters": {
+        "jsCode": "return items.map(item => {\n  const { name, email, jobDescription, resume } = item.json.body || {};\n  const missingFields = [];\n  if (!name) missingFields.push('name');\n  if (!email) missingFields.push('email');\n  if (!jobDescription) missingFields.push('jobDescription');\n  if (!resume) missingFields.push('resume');\n  if (missingFields.length > 0) {\n    throw new Error(`Missing required fields inside body: ${missingFields.join(', ')}`);\n  }\n  return { json: { name, email, jobDescription, resume } };\n});"
+      },
+      "id": "8daa477e-9a70-4a31-a2ab-92c0b45dc908",
+      "name": "Validate Inputs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [432, 300]
+    },
+    {
+      "parameters": {
+        "tableId": "candidates_ai_interview",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "name", "fieldValue": "={{ $node[\"Validate Inputs\"].json.name }}" },
+            { "fieldId": "email", "fieldValue": "={{ $node[\"Validate Inputs\"].json.email }}" }
+          ]
+        }
+      },
+      "id": "38374168-5611-415c-a8a1-d48e2d7536cb",
+      "name": "Store Candidate",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [624, 300],
+      "credentials": {
+        "supabaseApi": {
+          "id": "wMaaAewNUY90iUpo",
+          "name": "Supabase account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"llama-3.3-70b-versatile\",\n  \"messages\": [\n    {\"role\": \"system\", \"content\": \"Extract structured data from this job description. Return JSON only: { skills: string[], yearsExperience: number, roles: string[], summary: string }\"},\n    {\"role\": \"user\", \"content\": {{ JSON.stringify($json.jobDescription) }}}\n  ],\n  \"response_format\": {\"type\": \"json_object\"}\n}",
+        "options": {}
+      },
+      "id": "110c6acb-cce0-4a49-a894-0382e44fe301",
+      "name": "Parse JD",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [816, 100],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "WlHKo4N02BhjQPJK",
+          "name": "Header Auth account 7"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "return items.map(item => {\n  const content = JSON.parse(item.json.choices[0].message.content);\n  return {\n    json: {\n      skills: Array.isArray(content.skills) ? content.skills : [],\n      yearsExperience: typeof content.yearsExperience === 'number' ? content.yearsExperience : 0,\n      roles: Array.isArray(content.roles) ? content.roles : []\n    }\n  };\n});"
+      },
+      "id": "8e50f151-15a3-4d87-833f-53b4eb28b40c",
+      "name": "Extract JD",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1008, 100]
+    },
+    {
+      "parameters": {
+        "tableId": "job_descriptions_ai_interview",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "candidate_id", "fieldValue": "={{ $node[\"Store Candidate\"].json.id }}" },
+            { "fieldId": "raw_text", "fieldValue": "={{ $node[\"Validate Inputs\"].json.jobDescription }}" },
+            { "fieldId": "parsed_skills", "fieldValue": "={{ $json.skills }}" },
+            { "fieldId": "parsed_years_experience", "fieldValue": "={{ $json.yearsExperience }}" },
+            { "fieldId": "parsed_roles", "fieldValue": "={{ $json.roles }}" }
+          ]
+        }
+      },
+      "id": "6a51c8ad-aa74-4206-ab36-3ba054c4be03",
+      "name": "Store JD",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1200, 100],
+      "credentials": {
+        "supabaseApi": {
+          "id": "wMaaAewNUY90iUpo",
+          "name": "Supabase account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"llama-3.3-70b-versatile\",\n  \"messages\": [\n    {\"role\": \"system\", \"content\": \"Extract structured data from this resume. Return JSON only: { skills: string[], experience: [{ title: string, company: string, duration: string, highlights: string[] }], education: [{ degree: string, institution: string, year: string }] }\"},\n    {\"role\": \"user\", \"content\": {{ JSON.stringify($json.resume) }}}\n  ],\n  \"response_format\": {\"type\": \"json_object\"}\n}",
+        "options": {}
+      },
+      "id": "d8e3d02f-d0ec-4920-9449-8489203f7600",
+      "name": "Parse Resume",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [816, 500],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "WlHKo4N02BhjQPJK",
+          "name": "Header Auth account 7"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "return items.map(item => {\n  const content = JSON.parse(item.json.choices[0].message.content);\n  return {\n    json: {\n      skills: Array.isArray(content.skills) ? content.skills : [],\n      experience: Array.isArray(content.experience) ? content.experience : [],\n      education: Array.isArray(content.education) ? content.education : []\n    }\n  };\n});"
+      },
+      "id": "8e973301-3dd1-402b-9f66-7387890e62ac",
+      "name": "Extract Resume",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1008, 500]
+    },
+    {
+      "parameters": {
+        "tableId": "resumes_ai_interview",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "candidate_id", "fieldValue": "={{ $node[\"Store Candidate\"].json.id }}" },
+            { "fieldId": "raw_text", "fieldValue": "={{ $node[\"Validate Inputs\"].json.resume }}" },
+            { "fieldId": "parsed_skills", "fieldValue": "={{ $json.skills }}" },
+            { "fieldId": "parsed_experience", "fieldValue": "={{ $json.experience }}" },
+            { "fieldId": "parsed_education", "fieldValue": "={{ $json.education }}" }
+          ]
+        }
+      },
+      "id": "22937c81-e96f-417d-9786-355c53f0ac65",
+      "name": "Store Resume",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1200, 500],
+      "credentials": {
+        "supabaseApi": {
+          "id": "wMaaAewNUY90iUpo",
+          "name": "Supabase account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "return items.map(item => ({\n  json: {\n    actor_type: 'system',\n    action: 'candidate_intake_complete',\n    resource_type: 'candidates_ai_interview',\n    resource_id: $node[\"Store Candidate\"].json.id,\n    details: { email: $node[\"Validate Inputs\"].json.email }\n  }\n}));"
+      },
+      "id": "a1b2c3d4-e5f6-7890-abcd-ef0123456789",
+      "name": "Prepare Audit",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1392, 500]
+    },
+    {
+      "parameters": {
+        "tableId": "audit_log_ai_interview",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "actor_type", "fieldValue": "={{ $json.actor_type }}" },
+            { "fieldId": "action", "fieldValue": "={{ $json.action }}" },
+            { "fieldId": "resource_type", "fieldValue": "={{ $json.resource_type }}" },
+            { "fieldId": "resource_id", "fieldValue": "={{ $json.resource_id }}" },
+            { "fieldId": "details", "fieldValue": "={{ $json.details }}" }
+          ]
+        }
+      },
+      "id": "2da96625-d019-4fc0-afc3-d9541273217f",
+      "name": "Audit Log",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1584, 500],
+      "credentials": {
+        "supabaseApi": {
+          "id": "wMaaAewNUY90iUpo",
+          "name": "Supabase account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ {\n  candidate_id: $node['Store Candidate'].json.id,\n  jd_id: $node['Store JD'].json.id,\n  resume_id: $node['Store Resume'].json.id,\n  name: $node['Validate Inputs'].json.name,\n  email: $node['Validate Inputs'].json.email\n} }}"
+      },
+      "id": "resp-candidate-intake-001",
+      "name": "Build Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1776, 500]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [[{ "node": "Validate Inputs", "type": "main", "index": 0 }]]
+    },
+    "Validate Inputs": {
+      "main": [[{ "node": "Store Candidate", "type": "main", "index": 0 }]]
+    },
+    "Store Candidate": {
+      "main": [[
+        { "node": "Parse JD", "type": "main", "index": 0 },
+        { "node": "Parse Resume", "type": "main", "index": 0 }
+      ]]
+    },
+    "Parse JD": {
+      "main": [[{ "node": "Extract JD", "type": "main", "index": 0 }]]
+    },
+    "Extract JD": {
+      "main": [[{ "node": "Store JD", "type": "main", "index": 0 }]]
+    },
+    "Store JD": {
+      "main": [[{ "node": "Build Response", "type": "main", "index": 0 }]]
+    },
+    "Parse Resume": {
+      "main": [[{ "node": "Extract Resume", "type": "main", "index": 0 }]]
+    },
+    "Extract Resume": {
+      "main": [[{ "node": "Store Resume", "type": "main", "index": 0 }]]
+    },
+    "Store Resume": {
+      "main": [[{ "node": "Prepare Audit", "type": "main", "index": 0 }]]
+    },
+    "Prepare Audit": {
+      "main": [[{ "node": "Audit Log", "type": "main", "index": 0 }]]
+    },
+    "Audit Log": {
+      "main": [[{ "node": "Build Response", "type": "main", "index": 0 }]]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "11e350345aae172743fe2665ba36f76304fbd6b68282474d7d08206f6a010061"
+  }
+}

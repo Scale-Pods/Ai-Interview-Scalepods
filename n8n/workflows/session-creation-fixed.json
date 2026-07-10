@@ -1,0 +1,152 @@
+{
+  "name": "AI Interviewer - Session Creation",
+  "nodes": [
+    {
+      "parameters": {
+        "tableId": "interview_sessions_ai_interview",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "candidate_id", "fieldValue": "={{ $json.candidate_id }}" },
+            { "fieldId": "status", "fieldValue": "invited" },
+            { "fieldId": "expires_at", "fieldValue": "={{ (new Date(Date.now() + 24 * 60 * 60 * 1000)).toISOString() }}" }
+          ]
+        }
+      },
+      "id": "b2e4f5a6-7b8c-9d0e-1f2a-3b4c5d6e7f80",
+      "name": "Create Session",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [400, 300],
+      "credentials": {
+        "supabaseApi": {
+          "id": "wMaaAewNUY90iUpo",
+          "name": "Supabase account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "tableId": "interview_questions_ai_interview",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "session_id", "fieldValue": "={{ $node[\"Create Session\"].json.id }}" },
+            { "fieldId": "question_text", "fieldValue": "={{ $json.question }}" },
+            { "fieldId": "question_type", "fieldValue": "={{ $json.type || 'technical' }}" },
+            { "fieldId": "order_index", "fieldValue": "={{ $json.index }}" }
+          ]
+        }
+      },
+      "id": "c3d5e6f7-8a9b-0c1d-2e3f-4a5b6c7d8e90",
+      "name": "Store Questions",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [600, 300],
+      "credentials": {
+        "supabaseApi": {
+          "id": "wMaaAewNUY90iUpo",
+          "name": "Supabase account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const sessionId = $node[\"Create Session\"].json.id;\nreturn [\n  {\n    json: {\n      session_id: sessionId,\n      questions: [\n        { question: \"Tell me about your experience with React and TypeScript.\", type: \"technical\", index: 0 },\n        { question: \"Describe a challenging project you worked on and how you overcame obstacles.\", type: \"behavioral\", index: 1 },\n        { question: \"How do you stay updated with the latest industry trends?\", type: \"cultural\", index: 2 }\n      ]\n    }\n  }\n];"
+      },
+      "id": "d4e6f7a8-9b0c-1d2e-3f4a-5b6c7d8e9f01",
+      "name": "Generate Questions",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [800, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "return items.map(item => ({\n  json: {\n    actor_type: 'system',\n    action: 'interview_invite_sent',\n    resource_type: 'interview_sessions_ai_interview',\n    resource_id: $node[\"Create Session\"].json.id,\n    details: { email: $json.email }\n  }\n}));"
+      },
+      "id": "e5f7a8b9-0c1d-2e3f-4a5b-6c7d8e9f0123",
+      "name": "Prepare Audit",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1000, 300]
+    },
+    {
+      "parameters": {
+        "tableId": "audit_log_ai_interview",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "actor_type", "fieldValue": "={{ $json.actor_type }}" },
+            { "fieldId": "action", "fieldValue": "={{ $json.action }}" },
+            { "fieldId": "resource_type", "fieldValue": "={{ $json.resource_type }}" },
+            { "fieldId": "resource_id", "fieldValue": "={{ $json.resource_id }}" },
+            { "fieldId": "details", "fieldValue": "={{ $json.details }}" }
+          ]
+        }
+      },
+      "id": "f6a8b9c0-1d2e-3f4a-5b6c-7d8e9f012345",
+      "name": "Audit Log",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1200, 300],
+      "credentials": {
+        "supabaseApi": {
+          "id": "wMaaAewNUY90iUpo",
+          "name": "Supabase account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ {\n  session_id: $node['Create Session'].json.id,\n  invite_link: $node['Create Session'].json.invite_link,\n  status: 'invited'\n} }}"
+      },
+      "id": "resp-session-creation-001",
+      "name": "Build Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1400, 300]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "create-session",
+        "options": {
+          "responseMode": "responseNode"
+        }
+      },
+      "id": "a1b2c3d4-e5f6-7890-abcd-ef0123456789",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [200, 300],
+      "webhookId": "47f5a139-6aab-455f-96e9-ea04cd3788da"
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [[{ "node": "Create Session", "type": "main", "index": 0 }]]
+    },
+    "Create Session": {
+      "main": [[
+        { "node": "Store Questions", "type": "main", "index": 0 },
+        { "node": "Generate Questions", "type": "main", "index": 0 },
+        { "node": "Prepare Audit", "type": "main", "index": 0 }
+      ]]
+    },
+    "Generate Questions": {
+      "main": [[{ "node": "Store Questions", "type": "main", "index": 0 }]]
+    },
+    "Store Questions": {
+      "main": [[{ "node": "Build Response", "type": "main", "index": 0 }]]
+    },
+    "Prepare Audit": {
+      "main": [[{ "node": "Audit Log", "type": "main", "index": 0 }]]
+    },
+    "Audit Log": {
+      "main": [[{ "node": "Build Response", "type": "main", "index": 0 }]]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "11e350345aae172743fe2665ba36f76304fbd6b68282474d7d08206f6a010061"
+  }
+}

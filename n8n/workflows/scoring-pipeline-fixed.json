@@ -1,0 +1,261 @@
+{
+  "name": "AI Interviewer - Scoring Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "tableId": "interview_sessions_ai_interview",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "status", "fieldValue": "completed" }
+          ]
+        },
+        "options": {
+          "selectFields": ["id", "candidate_id", "status", "created_at"]
+        }
+      },
+      "id": "node-scoring-001",
+      "name": "Fetch Session",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [200, 300],
+      "credentials": {
+        "supabaseApi": {
+          "id": "wMaaAewNUY90iUpo",
+          "name": "Supabase account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "tableId": "interview_questions_ai_interview",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "session_id", "fieldValue": "={{ $node[\"Fetch Session\"].json.id }}" }
+          ]
+        },
+        "options": {
+          "selectFields": ["id", "question_text", "question_type", "order_index"]
+        }
+      },
+      "id": "node-scoring-002",
+      "name": "Fetch Questions",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [400, 300],
+      "credentials": {
+        "supabaseApi": {
+          "id": "wMaaAewNUY90iUpo",
+          "name": "Supabase account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "tableId": "proctoring_events_ai_interview",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "session_id", "fieldValue": "={{ $node[\"Fetch Session\"].json.id }}" }
+          ]
+        }
+      },
+      "id": "node-scoring-003",
+      "name": "Fetch Proctoring",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [400, 500],
+      "credentials": {
+        "supabaseApi": {
+          "id": "wMaaAewNUY90iUpo",
+          "name": "Supabase account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "tableId": "interview_answers_ai_interview",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "session_id", "fieldValue": "={{ $node[\"Fetch Session\"].json.id }}" }
+          ]
+        },
+        "options": {
+          "selectFields": ["id", "question_id", "answer_text", "created_at"]
+        }
+      },
+      "id": "node-scoring-004",
+      "name": "Fetch Answers",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [400, 700],
+      "credentials": {
+        "supabaseApi": {
+          "id": "wMaaAewNUY90iUpo",
+          "name": "Supabase account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const session = $node[\"Fetch Session\"].json;\nconst questions = $node[\"Fetch Questions\"].json;\nconst answers = $node[\"Fetch Answers\"].json;\nconst proctoring = $node[\"Fetch Proctoring\"].json;\n\nconst questionMap = {};\n(questions.all || []).forEach(q => { questionMap[q.id] = q; });\n\nconst answerList = (answers.all || []).map(a => ({\n  question: questionMap[a.question_id]?.question_text || 'Unknown',\n  answer: a.answer_text || 'No answer provided',\n  type: questionMap[a.question_id]?.question_type || 'technical'\n}));\n\nconst proctoringCount = (proctoring.all || []).length;\n\nreturn [{\n  json: {\n    session_id: session.id,\n    candidate_id: session.candidate_id,\n    answers: answerList,\n    totalQuestions: answerList.length,\n    proctoringEvents: proctoringCount,\n    scoredAt: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "node-scoring-005",
+      "name": "Compile Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [600, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"llama-3.3-70b-versatile\",\n  \"messages\": [\n    {\"role\": \"system\", \"content\": \"You are an expert technical interviewer. Evaluate the candidate's answers and provide a scorecard in JSON format: { technical_score: number (0-100), communication_score: number (0-100), problem_solving_score: number (0-100), cultural_fit_score: number (0-100), overall_score: number (0-100), strengths: string[], weaknesses: string[], recommendation: 'strong_hire' | 'hire' | 'consider' | 'no_go', ai_rationale: string }\"},\n    {\"role\": \"user\", \"content\": {{ JSON.stringify($json.answers) }}}\n  ],\n  \"response_format\": {\"type\": \"json_object\"}\n}",
+        "options": {}
+      },
+      "id": "node-scoring-006",
+      "name": "Score via LLM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [800, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "WlHKo4N02BhjQPJK",
+          "name": "Header Auth account 7"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const content = JSON.parse($json.choices[0].message.content);\nconst compileData = $node[\"Compile Data\"].json;\n\nreturn [{\n  json: {\n    session_id: compileData.session_id,\n    technical_score: content.technical_score || 0,\n    communication_score: content.communication_score || 0,\n    problem_solving_score: content.problem_solving_score || 0,\n    cultural_fit_score: content.cultural_fit_score || 0,\n    overall_score: content.overall_score || 0,\n    strengths: content.strengths || [],\n    weaknesses: content.weaknesses || [],\n    recommendation: content.recommendation || 'consider',\n    ai_rationale: content.ai_rationale || '',\n    scoring_model_version: 'llama-3.3-70b-versatile-v1',\n    evaluated_at: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "node-scoring-007",
+      "name": "Extract Score",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1000, 300]
+    },
+    {
+      "parameters": {
+        "tableId": "scorecards_ai_interview",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "session_id", "fieldValue": "={{ $json.session_id }}" },
+            { "fieldId": "technical_score", "fieldValue": "={{ $json.technical_score }}" },
+            { "fieldId": "communication_score", "fieldValue": "={{ $json.communication_score }}" },
+            { "fieldId": "problem_solving_score", "fieldValue": "={{ $json.problem_solving_score }}" },
+            { "fieldId": "cultural_fit_score", "fieldValue": "={{ $json.cultural_fit_score }}" },
+            { "fieldId": "overall_score", "fieldValue": "={{ $json.overall_score }}" },
+            { "fieldId": "strengths", "fieldValue": "={{ $json.strengths }}" },
+            { "fieldId": "weaknesses", "fieldValue": "={{ $json.weaknesses }}" },
+            { "fieldId": "recommendation", "fieldValue": "={{ $json.recommendation }}" },
+            { "fieldId": "ai_rationale", "fieldValue": "={{ $json.ai_rationale }}" },
+            { "fieldId": "scoring_model_version", "fieldValue": "={{ $json.scoring_model_version }}" },
+            { "fieldId": "evaluated_at", "fieldValue": "={{ $json.evaluated_at }}" }
+          ]
+        },
+        "options": {
+          "upsert": true
+        }
+      },
+      "id": "node-scoring-008",
+      "name": "Store Scorecard",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1200, 300],
+      "credentials": {
+        "supabaseApi": {
+          "id": "wMaaAewNUY90iUpo",
+          "name": "Supabase account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "tableId": "interview_sessions_ai_interview",
+        "fieldsUi": {
+          "fieldValues": [
+            { "fieldId": "status", "fieldValue": "scored" },
+            { "fieldId": "updated_at", "fieldValue": "={{ new Date().toISOString() }}" }
+          ]
+        },
+        "options": {
+          "selectFields": ["id", "status"],
+          "filterBy": "id"
+        },
+        "filterBy": {
+          "filterFields": {
+            "items": [
+              { "fieldId": "id", "fieldValue": "={{ $json.session_id }}" }
+            ]
+          }
+        }
+      },
+      "id": "node-scoring-009",
+      "name": "Update Session Status",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [1400, 300],
+      "credentials": {
+        "supabaseApi": {
+          "id": "wMaaAewNUY90iUpo",
+          "name": "Supabase account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ {\n  session_id: $json.session_id,\n  status: 'scored',\n  overall_score: $node['Extract Score'].json.overall_score,\n  recommendation: $node['Extract Score'].json.recommendation\n} }}"
+      },
+      "id": "resp-scoring-001",
+      "name": "Build Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1600, 300]
+    }
+  ],
+  "connections": {
+    "Fetch Session": {
+      "main": [[
+        { "node": "Fetch Questions", "type": "main", "index": 0 },
+        { "node": "Fetch Proctoring", "type": "main", "index": 0 },
+        { "node": "Fetch Answers", "type": "main", "index": 0 }
+      ]]
+    },
+    "Fetch Questions": {
+      "main": [[{ "node": "Compile Data", "type": "main", "index": 0 }]]
+    },
+    "Fetch Proctoring": {
+      "main": [[{ "node": "Compile Data", "type": "main", "index": 0 }]]
+    },
+    "Fetch Answers": {
+      "main": [[{ "node": "Compile Data", "type": "main", "index": 0 }]]
+    },
+    "Compile Data": {
+      "main": [[{ "node": "Score via LLM", "type": "main", "index": 0 }]]
+    },
+    "Score via LLM": {
+      "main": [[{ "node": "Extract Score", "type": "main", "index": 0 }]]
+    },
+    "Extract Score": {
+      "main": [[
+        { "node": "Store Scorecard", "type": "main", "index": 0 },
+        { "node": "Update Session Status", "type": "main", "index": 0 }
+      ]]
+    },
+    "Store Scorecard": {
+      "main": [[{ "node": "Build Response", "type": "main", "index": 0 }]]
+    },
+    "Update Session Status": {
+      "main": [[{ "node": "Build Response", "type": "main", "index": 0 }]]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "11e350345aae172743fe2665ba36f76304fbd6b68282474d7d08206f6a010061"
+  }
+}
