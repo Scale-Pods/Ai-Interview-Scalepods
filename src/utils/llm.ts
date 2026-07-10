@@ -32,7 +32,7 @@ interface ProjectMapping {
   notes: string
 }
 
-interface CandidateAnalysis {
+export interface CandidateAnalysis {
   skills: SkillAssessment[]
   projectMappings: ProjectMapping[]
   summary: string
