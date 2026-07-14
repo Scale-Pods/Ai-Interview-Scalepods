@@ -725,3 +725,18 @@ DROP POLICY IF EXISTS hr_select_answers ON interview_answers_ai_interview;
 CREATE POLICY hr_select_answers ON interview_answers_ai_interview
   FOR SELECT
   USING (COALESCE(auth.jwt() -> 'app_metadata' ->> 'role', auth.jwt() -> 'user_metadata' ->> 'role', '') IN ('hr_admin', 'hr_recruiter', 'hr_viewer', 'system'));
+
+-- ==========================================================
+-- 014: Keep recordings available to all HR roles
+-- ==========================================================
+
+DROP POLICY IF EXISTS hr_select_recordings ON recordings_ai_interview;
+CREATE POLICY hr_select_recordings ON recordings_ai_interview
+  FOR SELECT
+  USING (
+    COALESCE(
+      auth.jwt() -> 'app_metadata' ->> 'role',
+      auth.jwt() -> 'user_metadata' ->> 'role',
+      ''
+    ) IN ('hr_admin', 'hr_recruiter', 'hr_viewer', 'system')
+  );

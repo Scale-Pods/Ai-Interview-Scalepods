@@ -99,7 +99,7 @@ export function InterviewRoom() {
       console.log('handleStart: done')
     } catch (err) {
       console.error('Failed to get media streams:', err)
-      setStartError('Camera permission was denied. Please allow camera access to proceed.')
+      setStartError((err as Error).message || 'Camera permission was denied. Please allow camera access to proceed.')
       startingRef.current = false
     }
   }, [session, markInterviewStarted, setMediaStreams, startRecording, startProctoring])

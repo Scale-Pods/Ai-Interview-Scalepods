@@ -179,37 +179,33 @@ export function InterviewProvider({ children }: { children: React.ReactNode }) {
 
   const markInterviewStarted = useCallback(async () => {
     if (!session) return
-    try {
-      if (session.status !== 'in_progress') {
-        await updateSessionStatusPublic(session.id, 'in_progress')
-      }
-
-      const [latestQuestions, answersResult] = await Promise.all([
-        fetchQuestions(session.id),
-        supabasePublic
-          .from('interview_answers_ai_interview')
-          .select('id')
-          .eq('session_id', session.id)
-      ])
-
-      if (answersResult.error) throw answersResult.error
-
-      const answerCount = answersResult.data?.length || 0
-      if (answerCount === 0 && latestQuestions.length === 0) {
-        await resetToDynamicIntro(session.id)
-      } else {
-        setQuestions(latestQuestions)
-        setCurrentQuestionIndex(Math.min(answerCount, latestQuestions.length > 0 ? latestQuestions.length - 1 : 0))
-      }
-
-      setSession(prev => prev ? {
-        ...prev,
-        status: 'in_progress',
-        started_at: prev.started_at || new Date().toISOString()
-      } : null)
-    } catch (err) {
-      console.warn('Failed to mark interview as started:', err)
+    if (session.status !== 'in_progress') {
+      await updateSessionStatusPublic(session.id, 'in_progress')
     }
+
+    const [latestQuestions, answersResult] = await Promise.all([
+      fetchQuestions(session.id),
+      supabasePublic
+        .from('interview_answers_ai_interview')
+        .select('id')
+        .eq('session_id', session.id)
+    ])
+
+    if (answersResult.error) throw answersResult.error
+
+    const answerCount = answersResult.data?.length || 0
+    if (answerCount === 0 && latestQuestions.length === 0) {
+      await resetToDynamicIntro(session.id)
+    } else {
+      setQuestions(latestQuestions)
+      setCurrentQuestionIndex(Math.min(answerCount, latestQuestions.length > 0 ? latestQuestions.length - 1 : 0))
+    }
+
+    setSession(prev => prev ? {
+      ...prev,
+      status: 'in_progress',
+      started_at: prev.started_at || new Date().toISOString()
+    } : null)
   }, [session, resetToDynamicIntro])
 
   const startRecording = useCallback(async (sid: string, streams: { camera: MediaStream; screen?: MediaStream | null; audio?: MediaStream }) => {
