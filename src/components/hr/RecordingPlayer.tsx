@@ -11,14 +11,17 @@ interface RecordingPlayerProps {
   sessionId: string
 }
 
-const isPlayableRecording = (recording: Recording) =>
-  Boolean(recording.storage_path) && !['processing', 'failed'].includes(recording.status)
+// A recording can be marked failed after its file has already reached storage
+// (for example, if its final metadata update fails). Do not hide playback based
+// on that status; the storage object is the source of truth for playback.
+const isPlayableRecording = (recording: Recording) => Boolean(recording.storage_path)
 
 export function RecordingPlayer({ sessionId }: RecordingPlayerProps) {
   const [recordings, setRecordings] = useState<Recording[]>([])
   const [loading, setLoading] = useState(true)
   const [activeRecording, setActiveRecording] = useState<string | null>(null)
   const [videoUrl, setVideoUrl] = useState<string | null>(null)
+  const [publicVideoUrl, setPublicVideoUrl] = useState<string | null>(null)
   const [videoLoading, setVideoLoading] = useState(false)
   const [isPlaying, setIsPlaying] = useState(false)
   const [isMuted, setIsMuted] = useState(false)
@@ -60,6 +63,7 @@ export function RecordingPlayer({ sessionId }: RecordingPlayerProps) {
     setLoadError(null)
     setActiveRecording(recording.id)
     setVideoUrl(null)
+    setPublicVideoUrl(null)
     setIsPlaying(false)
     setCurrentTime(0)
     setDuration(null)
@@ -67,7 +71,7 @@ export function RecordingPlayer({ sessionId }: RecordingPlayerProps) {
     setActiveQuestionId(null)
 
     if (!isPlayableRecording(recording)) {
-      setLoadError('Recording is still processing. Please wait.')
+      setLoadError('This recording does not have a storage path yet.')
       setVideoLoading(false)
       return
     }
@@ -77,20 +81,21 @@ export function RecordingPlayer({ sessionId }: RecordingPlayerProps) {
       .from('recordings')
       .createSignedUrl(recording.storage_path, 3600)
 
+    const { data: publicData } = supabase
+      .storage
+      .from('recordings')
+      .getPublicUrl(recording.storage_path)
+
+    const fallbackUrl = publicData?.publicUrl || null
+    setPublicVideoUrl(fallbackUrl)
+
     if (signedData?.signedUrl) {
       setVideoUrl(signedData.signedUrl)
+    } else if (fallbackUrl) {
+      setVideoUrl(fallbackUrl)
     } else {
-      const { data: publicData } = supabase
-        .storage
-        .from('recordings')
-        .getPublicUrl(recording.storage_path)
-
-      if (publicData?.publicUrl) {
-        setVideoUrl(publicData.publicUrl)
-      } else {
-        const reason = signedError?.message ? ` ${signedError.message}` : ''
-        setLoadError(`Recording URL could not be created.${reason}`)
-      }
+      const reason = signedError?.message ? ` ${signedError.message}` : ''
+      setLoadError(`Recording URL could not be created.${reason}`)
     }
 
     setVideoLoading(false)
@@ -221,6 +226,10 @@ export function RecordingPlayer({ sessionId }: RecordingPlayerProps) {
                       }
                     }}
                     onError={() => {
+                      if (publicVideoUrl && videoUrl !== publicVideoUrl) {
+                        setVideoUrl(publicVideoUrl)
+                        return
+                      }
                       setLoadError('Recording file could not be loaded from storage.')
                     }}
                     onEnded={() => setIsPlaying(false)}

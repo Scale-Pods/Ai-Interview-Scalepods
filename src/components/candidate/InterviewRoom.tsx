@@ -43,6 +43,7 @@ export function InterviewRoom() {
   } = useInterviewContext()
   const { violations, startProctoring, stopProctoring } = useProctoringContext()
   const startingRef = useRef(false)
+  const completionStartedRef = useRef(false)
   const { speak, cancel } = useTTSEngine()
   const [answerState, setAnswerState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
   const [lastError, setLastError] = useState('')
@@ -56,6 +57,10 @@ export function InterviewRoom() {
   useEffect(() => {
     if (token) loadSession(token)
   }, [token, loadSession])
+
+  useEffect(() => {
+    completionStartedRef.current = false
+  }, [token])
 
   const [startError, setStartError] = useState('')
 
@@ -105,6 +110,10 @@ export function InterviewRoom() {
   }, [session, markInterviewStarted, setMediaStreams, startRecording, startProctoring])
 
   const finishInterview = useCallback(async () => {
+    // Completion may be triggered by the closing statement, the timer, and the
+    // end-early flow at nearly the same time. Only allow the first trigger.
+    if (completionStartedRef.current || session?.status === 'completed') return
+    completionStartedRef.current = true
     setCompleting(true)
     setCompletingError('')
     stopProctoring()
@@ -115,7 +124,7 @@ export function InterviewRoom() {
     } finally {
       setCompleting(false)
     }
-  }, [completeInterview, stopProctoring])
+  }, [completeInterview, session?.status, stopProctoring])
 
   const currentQuestion = questions[currentQuestionIndex] || null
   const hasReviewedQuestionSet = questions.some(q => q.source?.startsWith('hr_reviewed'))
@@ -128,13 +137,15 @@ export function InterviewRoom() {
   const onSpeakCompleteRef = useRef<() => void>(undefined)
   onSpeakCompleteRef.current = () => {
     setIsAiSpeaking(false)
-    if (!currentQuestion || isClosingQuestion) {
-      setTimeout(() => finishInterview(), 1500)
+    if ((!currentQuestion || isClosingQuestion) && !completionStartedRef.current) {
+      setTimeout(() => {
+        if (!completionStartedRef.current) finishInterview()
+      }, 1500)
     }
   }
 
   useEffect(() => {
-    if (currentQuestion && avStream) {
+    if (currentQuestion && avStream && !completionStartedRef.current) {
       setIsAiSpeaking(true)
       speak(currentQuestion.question_text, () => {
         onSpeakCompleteRef.current?.()
@@ -146,19 +157,19 @@ export function InterviewRoom() {
   }, [currentQuestion?.id, avStream])
 
   useEffect(() => {
-    if (globalTimer.isExpired) {
+    if (globalTimer.isExpired && session?.status !== 'completed' && !completionStartedRef.current) {
       speak("Your time has expired. We are wrapping up the interview now. Thank you for your time.", () => {
         finishInterview()
       })
     }
-  }, [globalTimer.isExpired, speak, finishInterview])
+  }, [globalTimer.isExpired, session?.status, speak, finishInterview])
 
   const endEarlyRef = useRef(endEarly)
   endEarlyRef.current = endEarly
   useEffect(() => {
-    if (!endEarly) return
+    if (!endEarly || completionStartedRef.current) return
     const timer = setTimeout(() => {
-      if (endEarlyRef.current) {
+      if (endEarlyRef.current && !completionStartedRef.current) {
         finishInterview()
       }
     }, 3000)

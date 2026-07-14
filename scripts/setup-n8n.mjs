@@ -262,12 +262,20 @@ return {
     token_hash: '={{ $json.token_hash }}',
     expires_at: '={{ $json.expires_at }}',
   }),
+  supabaseNode('Fetch Position', 'getAll', 'job_descriptions', [750, 300], [
+    { keyName: 'id', condition: 'eq', keyValue: '={{ $json.jd_id }}' },
+  ]),
+  codeNode(
+    'Extract Position',
+    `const jd = $input.first().json;\nconst role = jd.parsed_roles?.[0] || 'the position';\nreturn [{ json: { position: role } }];`,
+    [850, 300]
+  ),
   emailNode(
     'Send Email',
     'interviews@example.com',
-    '={{ $json.candidate_email }}',
-    'Your AI Interview Invitation',
-    'Hello {{ $json.candidate_name }},\n\nYou have been invited to complete an AI-powered interview.\n\nStart here: {{ $json.invite_link }}\n\nExpires: {{ $json.expires_at }}',
+    '={{ $node["Store Session"].json.candidate_email }}',
+    'Interview Invitation: {{ $node["Extract Position"].json.position }}',
+    'Hello {{ $node["Store Session"].json.candidate_name }},\n\nYou have been invited to complete an AI-powered interview for the position of {{ $node["Extract Position"].json.position }}.\n\nStart here: {{ $node["Store Session"].json.invite_link }}\n\nExpires: {{ $node["Store Session"].json.expires_at }}.\n\nGood luck!',
     [1250, 300]
   ),
   supabaseNode('Audit Log Session', 'insert', 'audit_log', [1450, 300], {
@@ -282,7 +290,9 @@ return {
 const sessionConnections = {
   Webhook: { main: [edge('Generate Session')] },
   'Generate Session': { main: [edge('Store Session')] },
-  'Store Session': { main: [edge('Send Email')] },
+  'Store Session': { main: [edge('Fetch Position')] },
+  'Fetch Position': { main: [edge('Extract Position')] },
+  'Extract Position': { main: [edge('Send Email')] },
   'Send Email': { main: [edge('Audit Log Session')] },
 };
 

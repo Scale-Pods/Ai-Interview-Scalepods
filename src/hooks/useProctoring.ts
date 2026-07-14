@@ -9,6 +9,20 @@ interface ProctoringState {
   recentEvent: ProctoringEvent | null
 }
 
+function closeAudioContext(audioContextRef: { current: AudioContext | null }) {
+  const audioContext = audioContextRef.current
+  // Clear the ref before closing: stop(), effect cleanup, and unmount cleanup
+  // can all run for the same interview lifecycle.
+  audioContextRef.current = null
+
+  if (!audioContext || audioContext.state === 'closed') return
+  void audioContext.close().catch(error => {
+    if ((error as DOMException).name !== 'InvalidStateError') {
+      console.warn('Failed to close audio monitoring context:', error)
+    }
+  })
+}
+
 export function useProctoring(sessionId: string) {
   const [state, setState] = useState<ProctoringState>({
     violations: [],
@@ -92,7 +106,7 @@ export function useProctoring(sessionId: string) {
     if (!audioExternallyManaged.current) {
       audioStreamRef.current?.getTracks().forEach(track => track.stop())
     }
-    audioContextRef.current?.close()
+    closeAudioContext(audioContextRef)
     
     if (document.fullscreenElement) {
       document.exitFullscreen().catch(() => {})
@@ -220,7 +234,7 @@ export function useProctoring(sessionId: string) {
       if (!audioExternallyManaged.current) {
         audioStreamRef.current?.getTracks().forEach(track => track.stop())
       }
-      audioContextRef.current?.close()
+      closeAudioContext(audioContextRef)
     }
   }, [isActive, emitEvent])
 
