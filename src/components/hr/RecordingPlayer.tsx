@@ -11,6 +11,9 @@ interface RecordingPlayerProps {
   sessionId: string
 }
 
+const isPlayableRecording = (recording: Recording) =>
+  Boolean(recording.storage_path) && !['processing', 'failed'].includes(recording.status)
+
 export function RecordingPlayer({ sessionId }: RecordingPlayerProps) {
   const [recordings, setRecordings] = useState<Recording[]>([])
   const [loading, setLoading] = useState(true)
@@ -63,7 +66,7 @@ export function RecordingPlayer({ sessionId }: RecordingPlayerProps) {
     setActiveView('video')
     setActiveQuestionId(null)
 
-    if (recording.status !== 'ready') {
+    if (!isPlayableRecording(recording)) {
       setLoadError('Recording is still processing. Please wait.')
       setVideoLoading(false)
       return
@@ -314,6 +317,7 @@ export function RecordingPlayer({ sessionId }: RecordingPlayerProps) {
             {recordings.map(recording => {
               const Icon = streamIcons[recording.stream_type] || Film
               const isActive = activeRecording === recording.id
+              const isPlayable = isPlayableRecording(recording)
 
               return (
                 <div key={recording.id} className="rounded-xl overflow-hidden transition" style={{
@@ -341,7 +345,7 @@ export function RecordingPlayer({ sessionId }: RecordingPlayerProps) {
                         {recording.file_size_bytes && <span>{formatBytes(recording.file_size_bytes)}</span>}
                       </div>
                     </div>
-                    {recording.status === 'ready' && (
+                    {isPlayable && (
                       <div className="flex gap-1">
                         <button
                           onClick={() => isActive ? setActiveRecording(null) : loadVideo(recording)}
