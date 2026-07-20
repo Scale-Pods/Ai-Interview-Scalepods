@@ -3,6 +3,7 @@ import { getAudioStream } from '@/utils/mediaHelpers'
 
 const SILENCE_TIMEOUT_MS = 4000
 const COUNTDOWN_TENTHS = Math.floor(SILENCE_TIMEOUT_MS / 100)
+const VOICE_ACTIVITY_THRESHOLD = 2.5
 
 interface AnswerRecorderProps {
   onAnswerComplete: (text: string, audioBlob?: Blob) => void
@@ -33,6 +34,16 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const analyserRef = useRef<AnalyserNode | null>(null)
   const rafRef = useRef<number>(0)
+  const audioActivityIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const isVoiceActiveRef = useRef(false)
+
+  const clearAudioActivityMonitor = useCallback(() => {
+    if (audioActivityIntervalRef.current) {
+      clearInterval(audioActivityIntervalRef.current)
+      audioActivityIntervalRef.current = null
+    }
+    isVoiceActiveRef.current = false
+  }, [])
 
   const clearCountdown = useCallback(() => {
     if (countdownIntervalRef.current) {
@@ -108,8 +119,9 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
     recognitionRef.current = null
 
     if (intervalRef.current) clearInterval(intervalRef.current)
+    clearAudioActivityMonitor()
     cancelAnimationFrame(rafRef.current)
-  }, [clearCountdown])
+  }, [clearAudioActivityMonitor, clearCountdown])
 
   const stopRecordingSilently = useCallback(() => {
     shouldSubmitRef.current = false
@@ -126,8 +138,9 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
     }
     recognitionRef.current = null
     if (intervalRef.current) clearInterval(intervalRef.current)
+    clearAudioActivityMonitor()
     cancelAnimationFrame(rafRef.current)
-  }, [clearCountdown])
+  }, [clearAudioActivityMonitor, clearCountdown])
 
   const startCountdown = useCallback(() => {
     clearCountdown()
@@ -145,11 +158,10 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
     }, 100)
   }, [clearCountdown, stopAndSubmit])
 
-  const startRecording = async () => {
+  const startRecording = useCallback(async () => {
     if (isRecordingRef.current) return
     
-    // Only start if the interview isn't already submitted
-    if (submittedRef.current) return
+    submittedRef.current = false
 
     const gen = ++generationRef.current
 
@@ -168,11 +180,40 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
       }
 
       const audioCtx = new AudioContext()
+      if (audioCtx.state === 'suspended') {
+        await audioCtx.resume().catch(() => {})
+      }
       const source = audioCtx.createMediaStreamSource(stream)
       const analyser = audioCtx.createAnalyser()
       analyser.fftSize = 256
       source.connect(analyser)
       analyserRef.current = analyser
+
+      // Use the microphone signal for silence detection. Speech-recognition
+      // results can arrive late or stop unexpectedly while a person is still
+      // speaking, which must not trigger an automatic submission.
+      const audioData = new Uint8Array(analyser.fftSize)
+      let wasSpeaking = false
+      clearAudioActivityMonitor()
+      
+      // Delay starting the audio activity monitor to allow audio context initialization to settle
+      setTimeout(() => {
+        if (gen !== generationRef.current || !isRecordingRef.current) return
+        audioActivityIntervalRef.current = setInterval(() => {
+          analyser.getByteTimeDomainData(audioData)
+          const averageAmplitude = audioData.reduce((total, sample) => total + Math.abs(sample - 128), 0) / audioData.length
+          const isSpeaking = averageAmplitude >= VOICE_ACTIVITY_THRESHOLD
+          isVoiceActiveRef.current = isSpeaking
+
+          if (isSpeaking) {
+            wasSpeaking = true
+            clearCountdown()
+          } else if (wasSpeaking && transcriptRef.current.trim().length > 0) {
+            wasSpeaking = false
+            startCountdown()
+          }
+        }, 100)
+      }, 500)
 
       const recorder = new MediaRecorder(stream)
       chunksRef.current = []
@@ -187,7 +228,8 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
 
         const blob = new Blob(chunksRef.current, { type: 'audio/webm' })
         audioBlobRef.current = blob
-        audioCtx.close()
+        clearAudioActivityMonitor()
+        void audioCtx.close().catch(() => {})
         analyserRef.current = null
         cancelAnimationFrame(rafRef.current)
 
@@ -213,6 +255,7 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
         const recognition = new SpeechRecognitionAPI()
         recognition.continuous = true
         recognition.interimResults = true
+        recognition.lang = navigator.language || 'en-US'
 
         recognition.onresult = (event: any) => {
           // Ignore stale handler from a previous generation
@@ -226,11 +269,10 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
           setTranscript(final)
           transcriptRef.current = final
 
-          // Voice Activity / Silence detection: Reset countdown every time speech is detected
-          if (final.trim().length > 0) {
-            startCountdown()
-          } else {
+          if (isVoiceActiveRef.current) {
             clearCountdown()
+          } else if (final.trim().length > 0) {
+            startCountdown()
           }
         }
 
@@ -238,16 +280,13 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
           // Ignore stale handler from a previous generation
           if (gen !== generationRef.current) return
 
-          // If the recognition stopped but we are still recording, and have transcript, submit!
+          // The browser can end recognition during a pause or while processing
+          // audio. Keep recording and restart it; microphone activity controls
+          // the silence countdown and eventual submission.
           if (isRecordingRef.current) {
-            if (transcriptRef.current.trim().length > 0) {
-              stopAndSubmit()
-            } else {
-              // Restart if empty transcript to keep listening
-              try {
-                recognition.start()
-              } catch {}
-            }
+            try {
+              recognition.start()
+            } catch {}
           }
         }
 
@@ -257,7 +296,7 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
     } catch (err) {
       console.error('Failed to start recording stream:', err)
     }
-  }
+  }, [audioStream, clearAudioActivityMonitor, clearCountdown, doSubmit, drawWaveform, startCountdown])
 
   // Effect: Auto trigger start/stop based on AI speaking status
   useEffect(() => {
@@ -266,7 +305,7 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
     } else {
       stopRecordingSilently()
     }
-  }, [isAiSpeaking])
+  }, [isAiSpeaking, startRecording, stopRecordingSilently])
 
   // Effect: Auto-submit on global timer expiry
   useEffect(() => {
@@ -282,11 +321,6 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
     }
   }, [endEarly, stopAndSubmit])
 
-  // Reset submitted flag whenever the parent component resets or updates callbacks
-  useEffect(() => {
-    submittedRef.current = false
-  }, [onAnswerComplete])
-
   // Cleanup on unmount
   useEffect(() => {
     return () => {
@@ -300,9 +334,10 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
       recognitionRef.current?.stop()
       recognitionRef.current = null
       if (intervalRef.current) clearInterval(intervalRef.current)
+      clearAudioActivityMonitor()
       cancelAnimationFrame(rafRef.current)
     }
-  }, [clearCountdown])
+  }, [clearAudioActivityMonitor, clearCountdown])
 
   const minutes = Math.floor(duration / 60)
   const seconds = duration % 60

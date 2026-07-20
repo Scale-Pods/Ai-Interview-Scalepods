@@ -10,12 +10,14 @@ interface TTSEngine {
 
 export function useTTSEngine(): TTSEngine {
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([])
+  const voicesRef = useRef<SpeechSynthesisVoice[]>([])
   const isSpeakingRef = useRef(false)
 
   useEffect(() => {
     const loadVoices = () => {
       const availableVoices = speechSynthesis.getVoices()
       setVoices(availableVoices)
+      voicesRef.current = availableVoices
     }
     
     loadVoices()
@@ -47,12 +49,13 @@ export function useTTSEngine(): TTSEngine {
     utterance.pitch = 1
     utterance.volume = 1
     
-    if (voices.length > 0) {
-      const preferredVoice = voices.find(v => 
+    const currentVoices = voicesRef.current
+    if (currentVoices.length > 0) {
+      const preferredVoice = currentVoices.find(v => 
         v.name.toLowerCase().includes('google') && 
         (v.lang.includes('en') || v.lang.includes('EN'))
       )
-      utterance.voice = preferredVoice || voices[0]
+      utterance.voice = preferredVoice || currentVoices[0]
     }
     
     utterance.onstart = () => {
@@ -79,20 +82,21 @@ export function useTTSEngine(): TTSEngine {
       isSpeakingRef.current = false
       if (onend) onend()
     }
-  }, [cancel, voices])
+  }, [cancel])
   
   const isSpeaking = useCallback(() => isSpeakingRef.current, [])
   
   const setVoiceSettings = useCallback((rate: number, pitch: number, voiceName?: string) => {
     cancel()
-    if (voiceName && voices.length > 0) {
-      const voice = voices.find(v => v.name === voiceName)
+    const currentVoices = voicesRef.current
+    if (voiceName && currentVoices.length > 0) {
+      const voice = currentVoices.find(v => v.name === voiceName)
       if (voice) {
         speak('', () => {})
         return
       }
     }
-  }, [cancel, speak, voices])
+  }, [cancel, speak])
   
   const getVoices = useCallback(() => voices, [voices])
   

@@ -43,7 +43,7 @@ export async function deleteCandidate(candidateId: string): Promise<void> {
     // Delete storage files
     const paths = (recordings || []).map(r => r.storage_path).filter(Boolean)
     if (paths.length > 0) {
-      await supabase.storage.from('recordings_ai_interview').remove(paths)
+      await supabase.storage.from('recordings').remove(paths)
     }
   }
 
@@ -63,6 +63,10 @@ export async function fetchDashboardStats(): Promise<DashboardStats> {
     .order('created_at', { ascending: false })
     .limit(100)
   if (error) throw error
+
+  const { count: totalCandidates } = await supabase
+    .from('candidates_ai_interview')
+    .select('*', { count: 'exact', head: true })
 
   const sessions = data as InterviewSession[]
   const unlinkedSessions = sessions.filter(s => !s.candidates_ai_interview)
@@ -100,6 +104,7 @@ export async function fetchDashboardStats(): Promise<DashboardStats> {
   })
 
   return {
+    totalCandidates: totalCandidates || 0,
     totalSessions: sessions.length,
     invitedToday: sessions.filter(s => s.status === 'invited' && s.created_at >= todayStart).length,
     startedToday: sessions.filter(s => s.status === 'in_progress' && s.created_at >= todayStart).length,

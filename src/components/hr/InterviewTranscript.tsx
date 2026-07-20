@@ -83,7 +83,7 @@ export function InterviewTranscript({ sessionId, onSeekTo, activeQuestionId }: I
         </div>
       ) : (
         <div className="space-y-2 max-h-[600px] overflow-y-auto pr-1">
-          {filtered.map((entry, i) => {
+          {filtered.map(entry => {
             const Icon = typeIcons[entry.questionType as keyof typeof typeIcons] || Brain
             const isExpanded = expandedAnswers.has(entry.questionId)
             const isActive = activeQuestionId === entry.questionId
@@ -109,9 +109,33 @@ export function InterviewTranscript({ sessionId, onSeekTo, activeQuestionId }: I
                       <p className="text-sm font-medium leading-snug" style={{ color: 'var(--label-primary)' }}>
                         {entry.question}
                       </p>
-                      <p className="text-[10px] capitalize mt-0.5" style={{ color: 'var(--label-tertiary)' }}>
-                        {entry.questionType} question
-                      </p>
+                      <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                        <span className="text-[10px] capitalize px-2 py-0.5 rounded-full font-medium" style={{ background: tc.bg, color: tc.color }}>
+                          {entry.questionType}
+                        </span>
+                        {entry.source === 'llm_ts_followup' && (
+                          <>
+                            <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold" style={{ background: 'color-mix(in srgb, var(--purple) 15%, transparent)', color: 'var(--purple)', border: '1px solid color-mix(in srgb, var(--purple) 25%, transparent)' }}>
+                              Follow-up
+                              {(() => {
+                                const parentIndex = entries.findIndex(e => e.questionId === entry.parentQuestionId)
+                                return parentIndex !== -1 ? ` to Q${parentIndex + 1}` : ''
+                              })()}
+                            </span>
+                            {entry.insufficiencyReason && (
+                              <span className="text-[10px] px-2 py-0.5 rounded-full font-medium" style={{ background: 'color-mix(in srgb, var(--red) 12%, transparent)', color: 'var(--red)', border: '1px solid color-mix(in srgb, var(--red) 20%, transparent)' }}>
+                                Reason: {
+                                  entry.insufficiencyReason === 'lacks_depth' ? 'Lacks Depth' :
+                                  entry.insufficiencyReason === 'lacks_evidence' ? 'Lacks Evidence' :
+                                  entry.insufficiencyReason === 'vague' ? 'Vague Answer' :
+                                  entry.insufficiencyReason === 'irrelevant' ? 'Irrelevant' :
+                                  entry.insufficiencyReason
+                                }
+                              </span>
+                            )}
+                          </>
+                        )}
+                      </div>
                     </div>
                   </div>
 

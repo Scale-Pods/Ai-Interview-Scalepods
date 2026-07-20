@@ -25,7 +25,7 @@ CREATE TABLE job_descriptions_ai_interview (
   candidate_id  UUID REFERENCES candidates_ai_interview(id) ON DELETE CASCADE,
   raw_text      TEXT NOT NULL,
   parsed_skills TEXT[] DEFAULT '{}',
-  parsed_years_experience INT,
+  parsed_years_experience DECIMAL(4,1),
   parsed_roles  TEXT[] DEFAULT '{}',
   created_at    TIMESTAMPTZ DEFAULT now()
 );
@@ -189,11 +189,11 @@ CREATE POLICY hr_update_candidates ON candidates_ai_interview FOR UPDATE
   USING (auth.jwt() ->> 'role' IN ('hr_admin', 'system'));
 
 CREATE POLICY hr_select_sessions ON interview_sessions_ai_interview FOR SELECT
-  USING (auth.jwt() ->> 'role' IN ('hr_admin', 'hr_recruiter', 'hr_viewer', 'system'));
+  USING (COALESCE(auth.jwt() -> 'app_metadata' ->> 'role', auth.jwt() -> 'user_metadata' ->> 'role', '') IN ('hr_admin', 'hr_recruiter', 'hr_viewer', 'system'));
 CREATE POLICY hr_insert_sessions ON interview_sessions_ai_interview FOR INSERT
-  WITH CHECK (auth.jwt() ->> 'role' IN ('hr_admin', 'hr_recruiter', 'system'));
+  WITH CHECK (COALESCE(auth.jwt() -> 'app_metadata' ->> 'role', auth.jwt() -> 'user_metadata' ->> 'role', '') IN ('hr_admin', 'hr_recruiter', 'system'));
 CREATE POLICY hr_update_sessions ON interview_sessions_ai_interview FOR UPDATE
-  USING (auth.jwt() ->> 'role' IN ('hr_admin', 'system'));
+  USING (COALESCE(auth.jwt() -> 'app_metadata' ->> 'role', auth.jwt() -> 'user_metadata' ->> 'role', '') IN ('hr_admin', 'system'));
 
 CREATE POLICY hr_select_scorecards ON scorecards_ai_interview FOR SELECT
   USING (auth.jwt() ->> 'role' IN ('hr_admin', 'hr_recruiter', 'hr_viewer', 'system'));
@@ -368,15 +368,15 @@ CREATE POLICY system_all ON candidates_ai_interview FOR ALL
 
 DROP POLICY IF EXISTS hr_select_sessions ON interview_sessions_ai_interview;
 CREATE POLICY hr_select_sessions ON interview_sessions_ai_interview FOR SELECT
-  USING (auth.jwt() ->> 'role' IN ('hr_admin', 'hr_recruiter', 'hr_viewer', 'system'));
+  USING (COALESCE(auth.jwt() -> 'app_metadata' ->> 'role', auth.jwt() -> 'user_metadata' ->> 'role', '') IN ('hr_admin', 'hr_recruiter', 'hr_viewer', 'system'));
 
 DROP POLICY IF EXISTS hr_insert_sessions ON interview_sessions_ai_interview;
 CREATE POLICY hr_insert_sessions ON interview_sessions_ai_interview FOR INSERT
-  WITH CHECK (auth.jwt() ->> 'role' IN ('hr_admin', 'hr_recruiter', 'system'));
+  WITH CHECK (COALESCE(auth.jwt() -> 'app_metadata' ->> 'role', auth.jwt() -> 'user_metadata' ->> 'role', '') IN ('hr_admin', 'hr_recruiter', 'system'));
 
 DROP POLICY IF EXISTS hr_update_sessions ON interview_sessions_ai_interview;
 CREATE POLICY hr_update_sessions ON interview_sessions_ai_interview FOR UPDATE
-  USING (auth.jwt() ->> 'role' IN ('hr_admin', 'system'));
+  USING (COALESCE(auth.jwt() -> 'app_metadata' ->> 'role', auth.jwt() -> 'user_metadata' ->> 'role', '') IN ('hr_admin', 'system'));
 
 DROP POLICY IF EXISTS hr_select_audit ON audit_log_ai_interview;
 CREATE POLICY hr_select_audit ON audit_log_ai_interview FOR SELECT
@@ -739,4 +739,16 @@ CREATE POLICY hr_select_recordings ON recordings_ai_interview
       auth.jwt() -> 'user_metadata' ->> 'role',
       ''
     ) IN ('hr_admin', 'hr_recruiter', 'hr_viewer', 'system')
+  );
+
+DROP POLICY IF EXISTS candidate_select_session_answers ON interview_answers_ai_interview;
+CREATE POLICY candidate_select_session_answers ON interview_answers_ai_interview
+  FOR SELECT
+  USING (
+    EXISTS (
+      SELECT 1 FROM interview_sessions_ai_interview s
+      WHERE s.id = interview_answers_ai_interview.session_id
+        AND s.status IN ('invited', 'in_progress', 'completed')
+        AND s.expires_at > now()
+    )
   );

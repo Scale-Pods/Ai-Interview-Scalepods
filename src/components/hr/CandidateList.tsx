@@ -1,12 +1,12 @@
 import { useState, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  Search, Mail, ExternalLink, Copy, ArrowUpDown, ArrowUp, ArrowDown,
+  Search, ExternalLink, Copy, ArrowUpDown, ArrowUp, ArrowDown,
   Users, Filter, ChevronLeft, ChevronRight, Inbox, UserPlus, Trash2
 } from 'lucide-react'
 import { fetchSessions } from '@/api/sessions'
-import { deleteCandidate } from '@/api/candidates'
-import type { InterviewSession } from '@/types'
+import { fetchCandidates, deleteCandidate } from '@/api/candidates'
+import type { Candidate, InterviewSession } from '@/types'
 import { TableSkeleton } from '@/components/common/Skeleton'
 import { ConfirmDialog } from '@/components/common/ConfirmDialog'
 import { formatRelativeTime } from '@/utils/formatDate'
@@ -52,17 +52,26 @@ export function CandidateList({ onSessionClick }: CandidateListProps) {
   const [deleteTarget, setDeleteTarget] = useState<InterviewSession | null>(null)
   const queryClient = useQueryClient()
 
-  const { data: sessions = [], isLoading } = useQuery({
+  const { data: sessions = [], isLoading: sessionsLoading } = useQuery({
     queryKey: ['sessions'],
     queryFn: fetchSessions,
     staleTime: 0,
   })
+
+  const { data: candidates = [], isLoading: candidatesLoading } = useQuery({
+    queryKey: ['candidates'],
+    queryFn: fetchCandidates,
+    staleTime: 0,
+  })
+
+  const isLoading = sessionsLoading || candidatesLoading
 
   const deleteMutation = useMutation({
     mutationFn: (candidateId: string) => deleteCandidate(candidateId),
     onSuccess: () => {
       toast.success('Candidate deleted successfully')
       queryClient.invalidateQueries({ queryKey: ['sessions'] })
+      queryClient.invalidateQueries({ queryKey: ['candidates'] })
       setDeleteTarget(null)
     },
     onError: (err: Error) => {
@@ -80,8 +89,33 @@ export function CandidateList({ onSessionClick }: CandidateListProps) {
     }
   }
 
+  const mergedAll = useMemo(() => {
+    const sessionByCandidateId = new Map<string, InterviewSession>()
+    for (const s of sessions) {
+      if (s.candidate_id) sessionByCandidateId.set(s.candidate_id, s)
+    }
+    const result: InterviewSession[] = [...sessions]
+    for (const candidate of candidates) {
+      if (!sessionByCandidateId.has(candidate.id)) {
+        result.push({
+          id: '',
+          candidate_id: candidate.id,
+          jd_id: '',
+          resume_id: '',
+          status: 'pending',
+          expires_at: '',
+          created_at: candidate.created_at,
+          updated_at: candidate.created_at,
+          candidates_ai_interview: candidate as Candidate,
+          scorecards_ai_interview: []
+        })
+      }
+    }
+    return result
+  }, [sessions, candidates])
+
   const filtered = useMemo(() => {
-    let list = sessions
+    let list = mergedAll
 
     if (statusFilter !== 'all') {
       list = list.filter(s => s.status === statusFilter)
@@ -121,7 +155,7 @@ export function CandidateList({ onSessionClick }: CandidateListProps) {
     })
 
     return list
-  }, [sessions, statusFilter, search, sortField, sortDir])
+  }, [mergedAll, statusFilter, search, sortField, sortDir])
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PER_PAGE))
   const safePage = Math.min(page, totalPages - 1)
@@ -136,12 +170,12 @@ export function CandidateList({ onSessionClick }: CandidateListProps) {
   }
 
   const tabCounts = useMemo(() => {
-    const counts: Record<string, number> = { all: sessions.length }
-  sessions.forEach(s => {
-    counts[s.status] = (counts[s.status] || 0) + 1
-  })
-  return counts
-  }, [sessions])
+    const counts: Record<string, number> = { all: mergedAll.length }
+    mergedAll.forEach(s => {
+      counts[s.status] = (counts[s.status] || 0) + 1
+    })
+    return counts
+  }, [mergedAll])
 
   const SortIcon = ({ field }: { field: SortField }) => {
     if (sortField !== field) return <ArrowUpDown size={12} className="opacity-30" />
@@ -165,7 +199,7 @@ export function CandidateList({ onSessionClick }: CandidateListProps) {
         <h1 className="text-2xl font-bold flex items-center gap-3">
           <Users size={24} style={{ color: 'var(--blue)' }} />
           Candidates
-          <span className="text-sm font-normal" style={{ color: 'var(--label-tertiary)' }}>({sessions.length})</span>
+          <span className="text-sm font-normal" style={{ color: 'var(--label-tertiary)' }}>({mergedAll.length})</span>
         </h1>
         <div className="relative w-full sm:w-72">
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--label-secondary)' }} />
@@ -245,8 +279,8 @@ export function CandidateList({ onSessionClick }: CandidateListProps) {
                   const score = session.scorecards_ai_interview?.[0]
                   return (
                     <tr
-                      key={session.id}
-                      onClick={() => onSessionClick(session)}
+                      key={session.id || session.candidate_id}
+                      onClick={() => session.id ? onSessionClick(session) : null}
                       className="cursor-default group"
                       style={{ borderBottom: '1px solid var(--separator)', transition: 'background 130ms ease' }}
                       onMouseEnter={e => { e.currentTarget.style.background = 'var(--fill-quaternary)' }}

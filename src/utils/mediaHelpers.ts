@@ -49,6 +49,14 @@ export async function getCameraStream(constraints?: MediaTrackConstraints, timeo
 }
 
 export async function getAudioStream(timeoutMs = 4000): Promise<MediaStream | null> {
+  const audioOnlyTimeout = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), timeoutMs))
+  try {
+    return await Promise.race([
+      navigator.mediaDevices.getUserMedia({ audio: true }),
+      audioOnlyTimeout
+    ]) as MediaStream
+  } catch {}
+
   // Try video+audio combined first — camera's built-in mic may require video
   for (const cons of [
     { audio: true, video: true },

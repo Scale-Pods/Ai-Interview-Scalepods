@@ -13,8 +13,9 @@ import { PreCheck } from './PreCheck'
 import { QuestionDisplay } from './QuestionDisplay'
 import { VideoFeed } from './VideoFeed'
 import { ProctoringOverlay } from './ProctoringOverlay'
+import { RecruiterPersona } from './RecruiterPersona'
 
-const INTERVIEW_TIME_MINUTES = 20
+const INTERVIEW_TIME_MINUTES = 25
 const DEFAULT_TARGET_QUESTIONS = 11
 
 export function InterviewRoom() {
@@ -22,7 +23,9 @@ export function InterviewRoom() {
   const {
     session,
     questions,
+    currentTurn,
     currentQuestionIndex,
+    currentQuestionId,
     loading,
     loadError,
     loadSession,
@@ -31,15 +34,16 @@ export function InterviewRoom() {
     screenStream,
     setMediaStreams,
     submitAnswer,
-    nextQuestion,
+    generateNextTurn,
     completeInterview,
     markInterviewStarted,
     startRecording,
     recordingDuration,
     recordingStatus,
     recordingError,
-    isGeneratingQuestion,
-    generateAndStoreNextQuestion
+    isGeneratingTurn,
+    isAnalyzingAnswer,
+    liveAssessmentNotes
   } = useInterviewContext()
   const { violations, startProctoring, stopProctoring } = useProctoringContext()
   const startingRef = useRef(false)
@@ -48,11 +52,13 @@ export function InterviewRoom() {
   const [answerState, setAnswerState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
   const [lastError, setLastError] = useState('')
   const [isAiSpeaking, setIsAiSpeaking] = useState(false)
+  const isAiSpeakingRef = useRef(false)
   const [endEarly, setEndEarly] = useState(false)
   const [showEndConfirm, setShowEndConfirm] = useState(false)
   const [completing, setCompleting] = useState(false)
   const [completingError, setCompletingError] = useState('')
   const globalTimer = useInterviewTimer(INTERVIEW_TIME_MINUTES)
+  const turnIdRef = useRef<string | undefined>(undefined)
 
   useEffect(() => {
     if (token) loadSession(token)
@@ -110,8 +116,6 @@ export function InterviewRoom() {
   }, [session, markInterviewStarted, setMediaStreams, startRecording, startProctoring])
 
   const finishInterview = useCallback(async () => {
-    // Completion may be triggered by the closing statement, the timer, and the
-    // end-early flow at nearly the same time. Only allow the first trigger.
     if (completionStartedRef.current || session?.status === 'completed') return
     completionStartedRef.current = true
     setCompleting(true)
@@ -126,35 +130,39 @@ export function InterviewRoom() {
     }
   }, [completeInterview, session?.status, stopProctoring])
 
-  const currentQuestion = questions[currentQuestionIndex] || null
-  const hasReviewedQuestionSet = questions.some(q => q.source?.startsWith('hr_reviewed'))
-  const totalQuestions = hasReviewedQuestionSet
-    ? Math.max(questions.length, 1)
-    : Math.max(questions.length, DEFAULT_TARGET_QUESTIONS)
-  const isLastQuestion = currentQuestionIndex >= totalQuestions - 1
-  const isClosingQuestion = currentQuestion?.question_text.startsWith('Thank you so much for sharing that.')
-
+  // After the AI finishes speaking, decide what to do next
   const onSpeakCompleteRef = useRef<() => void>(undefined)
   onSpeakCompleteRef.current = () => {
+    isAiSpeakingRef.current = false
     setIsAiSpeaking(false)
-    if ((!currentQuestion || isClosingQuestion) && !completionStartedRef.current) {
+    if (currentTurn?.turn_type === 'closing' && !completionStartedRef.current) {
+      // Natural closing — give the candidate a moment then end
       setTimeout(() => {
         if (!completionStartedRef.current) finishInterview()
-      }, 1500)
+      }, 3000)
     }
   }
 
+  // Speak the interviewer's current turn when it changes
   useEffect(() => {
-    if (currentQuestion && avStream && !completionStartedRef.current) {
+    if (currentTurn && avStream && !completionStartedRef.current) {
+      const textToSpeak = currentTurn.interviewer_text
+      const turnId = `${currentTurn.turn_type}-${textToSpeak.slice(0, 40)}-${Date.now()}`
+      turnIdRef.current = turnId
+      isAiSpeakingRef.current = true
       setIsAiSpeaking(true)
-      speak(currentQuestion.question_text, () => {
-        onSpeakCompleteRef.current?.()
+      speak(textToSpeak, () => {
+        // Only process completion if this is still the current turn
+        if (turnIdRef.current === turnId) {
+          onSpeakCompleteRef.current?.()
+        }
       })
     }
     return () => {
       cancel()
+      // Only clear speaking state if a new turn is incoming (not on unmount)
     }
-  }, [currentQuestion?.id, avStream])
+  }, [currentTurn, avStream, cancel, speak])
 
   useEffect(() => {
     if (globalTimer.isExpired && session?.status !== 'completed' && !completionStartedRef.current) {
@@ -177,38 +185,45 @@ export function InterviewRoom() {
   }, [endEarly, finishInterview])
 
   const handleAnswerComplete = useCallback(async (text: string, audioBlob?: Blob) => {
-    if (!currentQuestion) return
+    if (!currentQuestionId) {
+      setAnswerState('error')
+      setLastError('The active question was not ready. Please wait for the interviewer to repeat it.')
+      return
+    }
 
     setAnswerState('saving')
     setLastError('')
 
     try {
+      const qId = currentQuestionId
       const audioUrl = audioBlob ? URL.createObjectURL(audioBlob) : undefined
-      await submitAnswer(currentQuestion.id, text, audioUrl)
+      await submitAnswer(qId, text, audioUrl)
       setAnswerState('saved')
 
-      if (endEarly) {
+      if (endEarly || currentTurn?.turn_type === 'closing') {
         setEndEarly(false)
-        await finishInterview()
+        setTimeout(() => finishInterview(), 1500)
         return
       }
 
-      if (hasReviewedQuestionSet && isLastQuestion) {
-        await finishInterview()
-        return
-      }
+      // Yield to the event loop before generating the next turn.
+      // React 18 automatic batching keeps all state updates in a single
+      // continuous async chain batched into one paint.  submitAnswer sets
+      // setLiveAssessmentNotes (the feedback note) and generateNextTurn sets
+      // setCurrentQuestionId / setCurrentTurn (the next question).  Without
+      // this yield both land in the same render, so the candidate never sees
+      // the feedback note *before* the next question appears.  Scheduling
+      // generateNextTurn as a new macrotask lets React flush the note first.
+      await new Promise<void>(resolve => setTimeout(resolve, 0))
 
-      if (!questions[currentQuestionIndex + 1]) {
-        await generateAndStoreNextQuestion()
-      }
-
-      nextQuestion()
+      // Generate the next conversational turn
+      await generateNextTurn()
       setAnswerState('idle')
     } catch (err) {
       setAnswerState('error')
       setLastError((err as Error).message || 'Unable to save this answer')
     }
-  }, [currentQuestion, questions, currentQuestionIndex, hasReviewedQuestionSet, isLastQuestion, submitAnswer, nextQuestion, generateAndStoreNextQuestion, endEarly, finishInterview])
+  }, [currentQuestionId, currentTurn, submitAnswer, generateNextTurn, endEarly, finishInterview])
 
   if (loading || !session) {
     if (!loading && !session) {
@@ -280,6 +295,15 @@ export function InterviewRoom() {
   }
 
   const timerColor = globalTimer.isExpired ? 'var(--red)' : globalTimer.isWarning ? 'var(--orange)' : 'var(--label-secondary)'
+
+  // Derive the real target from actual loaded questions so follow-up questions
+  // expand the bar rather than clamping the last segment permanently blue,
+  // and so sessions with fewer questions don't leave orphan grey segments.
+  const progressTarget = Math.max(
+    questions.length > 0 ? questions.length : DEFAULT_TARGET_QUESTIONS,
+    currentQuestionIndex + 1  // never let the active index exceed the bar
+  )
+  const isClosingTurn = currentTurn?.turn_type === 'closing'
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -358,7 +382,7 @@ export function InterviewRoom() {
 
         <div className="max-w-7xl mx-auto px-4 sm:px-6 pb-3">
           <div className="flex items-center gap-1">
-            {Array.from({ length: totalQuestions }).map((_, i) => {
+            {Array.from({ length: progressTarget }).map((_, i) => {
               const isActive = i === currentQuestionIndex
               const isDone = i < currentQuestionIndex
               return (
@@ -371,19 +395,48 @@ export function InterviewRoom() {
             })}
           </div>
           <p className="text-[10px] text-center mt-1.5" style={{ color: 'var(--label-tertiary)' }}>
-            Question {Math.min(currentQuestionIndex + 1, totalQuestions)} of {totalQuestions}
+            Question {currentQuestionIndex + 1} of {progressTarget}
           </p>
         </div>
       </header>
 
       <main className="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 py-6 grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
         <section className="lg:col-span-2 space-y-6">
-          <QuestionDisplay
-            question={currentQuestion}
-            questionNumber={currentQuestionIndex}
-            totalQuestions={totalQuestions}
-            onSpeakQuestion={(q) => speak(q.question_text)}
-          />
+          {currentTurn && !isClosingTurn && (
+            <QuestionDisplay
+              question={{
+                id: currentQuestionId || '',
+                session_id: session.id,
+                question_text: currentTurn.question_text || currentTurn.interviewer_text,
+                question_type: currentTurn.question_type || 'technical',
+                source: currentTurn.turn_type === 'follow_up' ? 'llm_ts_followup' : 'llm_ts_dynamic',
+                order_index: currentQuestionIndex,
+                created_at: ''
+              }}
+              questionNumber={currentQuestionIndex}
+              totalQuestions={progressTarget}
+              interviewerLeadIn={(() => {
+                const full = currentTurn.interviewer_text || ''
+                const question = currentTurn.question_text || ''
+                if (!question || full === question) return undefined
+                // Only show lead-in if interviewer_text genuinely wraps the question
+                // (i.e. contains the question as a substring with a preamble before it)
+                const idx = full.indexOf(question)
+                if (idx > 0) return full.slice(0, idx).trim() || undefined
+                return undefined
+              })()}
+            />
+          )}
+
+          {currentTurn && isClosingTurn && (
+            <div className="w-full animate-fade-in">
+              <div className="card p-6 sm:p-8" style={{ borderLeft: '4px solid color-mix(in srgb, var(--green) 40%, transparent)' }}>
+                <p className="text-lg sm:text-xl leading-relaxed font-medium" style={{ color: 'var(--label-primary)' }}>
+                  {currentTurn.interviewer_text}
+                </p>
+              </div>
+            </div>
+          )}
 
           {globalTimer.isExpired && (
             <div className="flex items-center gap-2 px-4 py-3 rounded-xl animate-fade-in" style={{ background: 'color-mix(in srgb, var(--red) 10%, transparent)', border: '1px solid color-mix(in srgb, var(--red) 20%, transparent)' }}>
@@ -392,22 +445,31 @@ export function InterviewRoom() {
             </div>
           )}
 
-          {isGeneratingQuestion ? (
+          {isGeneratingTurn ? (
             <div className="flex flex-col items-center justify-center p-8 rounded-xl animate-pulse" style={{ background: 'var(--fill-quaternary)' }}>
               <div className="h-8 w-8 rounded-full animate-spin mb-3" style={{ border: '2px solid rgba(120,120,128,0.3)', borderTopColor: 'var(--blue)' }} />
-              <p className="text-sm font-medium" style={{ color: 'var(--label-secondary)' }}>AI is crafting your next question...</p>
-              <p className="text-[10px] mt-1" style={{ color: 'var(--label-tertiary)' }}>Analyzing your response to formulate a tailored question</p>
+              <p className="text-sm font-medium" style={{ color: 'var(--label-secondary)' }}>AI is thinking...</p>
+              <p className="text-[10px] mt-1" style={{ color: 'var(--label-tertiary)' }}>Crafting the next part of our conversation</p>
             </div>
           ) : (
-            currentQuestion && !isClosingQuestion && currentQuestionIndex < totalQuestions && (
-              <AnswerRecorder 
-                onAnswerComplete={handleAnswerComplete} 
-                isAiSpeaking={isAiSpeaking} 
-                expired={globalTimer.isExpired} 
+            currentTurn && !isClosingTurn && (
+              <AnswerRecorder
+                key={currentQuestionId}
+                onAnswerComplete={handleAnswerComplete}
+                isAiSpeaking={isAiSpeaking}
+                expired={globalTimer.isExpired}
                 endEarly={endEarly}
                 audioStream={audioStream}
               />
             )
+          )}
+
+          {isClosingTurn && !isAiSpeaking && (
+            <div className="flex flex-col items-center gap-3 pt-4">
+              <p className="text-sm" style={{ color: 'var(--label-secondary)' }}>
+                Thank you for completing the interview. Your responses have been recorded.
+              </p>
+            </div>
           )}
 
           <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
@@ -415,12 +477,12 @@ export function InterviewRoom() {
               {answerState === 'saving' && (
                 <span className="inline-flex items-center gap-1.5" style={{ color: 'var(--blue)' }}>
                   <div className="h-3 w-3 rounded-full animate-spin" style={{ border: '2px solid rgba(120,120,128,0.3)', borderTopColor: 'var(--blue)' }} />
-                  Saving your answer & generating next question...
+                  Saving your response...
                 </span>
               )}
               {answerState === 'saved' && (
                 <span className="inline-flex items-center gap-1.5 animate-fade-in" style={{ color: 'var(--green)' }}>
-                  <CheckCircle size={15} /> Answer saved successfully
+                  <CheckCircle size={15} /> Response saved
                 </span>
               )}
               {answerState === 'error' && (
@@ -433,6 +495,15 @@ export function InterviewRoom() {
         </section>
 
         <aside className="space-y-4 lg:block">
+          <RecruiterPersona
+            isAiSpeaking={isAiSpeaking}
+            isAnalyzingAnswer={isAnalyzingAnswer}
+            isGeneratingTurn={isGeneratingTurn}
+            liveAssessmentNotes={liveAssessmentNotes}
+            currentQuestionIndex={currentQuestionIndex}
+            currentQuestionId={currentQuestionId || ''}
+          />
+
           <details className="lg:hidden" open>
             <summary className="flex items-center gap-2 text-sm font-medium p-2 rounded-lg transition"
               style={{ color: 'var(--label-secondary)' }}>
@@ -452,10 +523,10 @@ export function InterviewRoom() {
             <div className="h-2 rounded-full overflow-hidden" style={{ background: 'var(--fill-tertiary)' }}>
               <div
                 className="h-full transition-all duration-500"
-                style={{ width: `${(Math.min(currentQuestionIndex + 1, totalQuestions) / totalQuestions) * 100}%`, background: 'var(--blue)' }}
+                style={{ width: `${(currentQuestionIndex + 1) / progressTarget * 100}%`, background: 'var(--blue)' }}
               />
             </div>
-            <p className="mt-2 text-xs">{Math.min(currentQuestionIndex + 1, totalQuestions)} of {totalQuestions} questions</p>
+            <p className="mt-2 text-xs">{currentQuestionIndex + 1} of {progressTarget} questions</p>
           </div>
         </aside>
       </main>

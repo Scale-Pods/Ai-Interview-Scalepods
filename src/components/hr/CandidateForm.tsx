@@ -2,11 +2,13 @@ import { useState, useRef } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   UserPlus, Upload, FileText, Send, Copy, CheckCircle, ExternalLink,
-  File, X, AlertCircle, ChevronRight, Mail, User, Briefcase, Sparkles, Plus, Trash2
+  File, X, AlertCircle, ChevronRight, Mail, User, Briefcase, Sparkles, Plus, Trash2,
+  Shield, ChevronDown, ChevronUp, Search
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { extractTextFromFile } from '@/utils/mediaHelpers'
-import { analyzeCandidateFit, generateNextInterviewQuestion } from '@/utils/llm'
+import { analyzeCandidateFit, generateNextInterviewQuestion, auditResumeTruthfulness } from '@/utils/llm'
+import type { CandidateAnalysis, ResumeTruthAudit } from '@/utils/llm'
 
 type FormStep = 'details' | 'jd' | 'review'
 
@@ -43,6 +45,7 @@ type DraftQuestionType = 'technical' | 'behavioral' | 'situational' | 'cultural'
 interface DraftQuestion {
   question_text: string
   question_type: DraftQuestionType
+  strategy?: string
 }
 
 interface CandidateFormProps {
@@ -66,6 +69,9 @@ export function CandidateForm({ onSuccess }: CandidateFormProps) {
   const [jdText, setJdText] = useState('')
   const [draftQuestions, setDraftQuestions] = useState<DraftQuestion[]>([])
   const [questionsGenerating, setQuestionsGenerating] = useState(false)
+  const [candidateAnalysis, setCandidateAnalysis] = useState<CandidateAnalysis | null>(null)
+  const [resumeAudit, setResumeAudit] = useState<ResumeTruthAudit | null>(null)
+  const [showIntelligencePanel, setShowIntelligencePanel] = useState(false)
   const [errors, setErrors] = useState<Partial<Record<keyof CandidateFormData, string>>>({})
   const resumeRef = useRef<HTMLInputElement>(null)
   const jdFileRef = useRef<HTMLInputElement>(null)
@@ -124,6 +130,7 @@ export function CandidateForm({ onSuccess }: CandidateFormProps) {
       setJdText(jdText)
       setSubmitted(true)
       queryClient.invalidateQueries({ queryKey: ['sessions'] })
+      queryClient.invalidateQueries({ queryKey: ['candidates'] })
       queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] })
       toast.success('Candidate submitted successfully')
       await generateDraftQuestions(resumeText, jdText)
@@ -133,16 +140,27 @@ export function CandidateForm({ onSuccess }: CandidateFormProps) {
 
   const generateDraftQuestions = async (resumeRaw: string, jdRaw: string) => {
     setQuestionsGenerating(true)
+    setCandidateAnalysis(null)
+    setResumeAudit(null)
     try {
-      const analysis = await analyzeCandidateFit(resumeRaw, jdRaw)
+      const [analysis, audit] = await Promise.allSettled([
+        analyzeCandidateFit(resumeRaw, jdRaw),
+        auditResumeTruthfulness(resumeRaw, jdRaw)
+      ])
+      const fitResult = analysis.status === 'fulfilled' ? analysis.value : null
+      const auditResult = audit.status === 'fulfilled' ? audit.value : null
+      setCandidateAnalysis(fitResult)
+      setResumeAudit(auditResult)
+
       const history: Array<{ question: string; answer: string; type: string }> = []
       const generated: DraftQuestion[] = []
 
       for (let i = 0; i < TARGET_JOB_QUESTIONS; i += 1) {
-        const next = await generateNextInterviewQuestion(resumeRaw, jdRaw, history, i, analysis, '', '', '')
+        const next = await generateNextInterviewQuestion(resumeRaw, jdRaw, history, i, fitResult, '', '', '')
         const question = {
           question_text: next.question_text,
-          question_type: next.question_type
+          question_type: next.question_type,
+          strategy: next.follow_up_reason
         }
         generated.push(question)
         history.push({
@@ -154,6 +172,7 @@ export function CandidateForm({ onSuccess }: CandidateFormProps) {
 
       setDraftQuestions(generated)
       toast.success('Questions ready for review')
+      setShowIntelligencePanel(true)
     } catch (err) {
       toast.error((err as Error).message || 'Failed to generate questions')
     } finally {
@@ -170,6 +189,24 @@ export function CandidateForm({ onSuccess }: CandidateFormProps) {
       question_text: '',
       question_type: 'technical'
     }])
+  }
+
+  const addVerificationQuestions = () => {
+    if (!resumeAudit) return
+    const verificationQuestions = resumeAudit.claims
+      .filter(claim => claim.probe_question.trim())
+      .slice(0, 5)
+      .map(claim => ({
+        question_text: claim.probe_question,
+        question_type: 'technical' as DraftQuestionType,
+        strategy: `Verification probe for: ${claim.claim}`
+      }))
+    if (verificationQuestions.length === 0) {
+      toast.error('No resume claims are available for verification yet')
+      return
+    }
+    setDraftQuestions(previous => [...previous, ...verificationQuestions])
+    toast.success(`${verificationQuestions.length} verification questions added`)
   }
 
   const removeDraftQuestion = (index: number) => {
@@ -215,11 +252,13 @@ export function CandidateForm({ onSuccess }: CandidateFormProps) {
       if (link) {
         setInviteLink(link)
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
+        queryClient.invalidateQueries({ queryKey: ['candidates'] })
         queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] })
         toast.success('Invite sent!')
       } else {
         toast.success('Session created! Check Candidates list for the invite link.')
         queryClient.invalidateQueries({ queryKey: ['sessions'] })
+        queryClient.invalidateQueries({ queryKey: ['candidates'] })
         queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] })
         onSuccess?.()
       }
@@ -286,6 +325,15 @@ export function CandidateForm({ onSuccess }: CandidateFormProps) {
                   </button>
                   <button
                     type="button"
+                    onClick={addVerificationQuestions}
+                    disabled={!resumeAudit || questionsGenerating || inviteMutation.isPending}
+                    className="btn-secondary text-xs"
+                    title="Add targeted probes for resume claims that need verification"
+                  >
+                    <Search size={14} /> Generate Verification Questions
+                  </button>
+                  <button
+                    type="button"
                     onClick={addDraftQuestion}
                     disabled={questionsGenerating || inviteMutation.isPending}
                     className="btn-secondary text-xs"
@@ -298,45 +346,258 @@ export function CandidateForm({ onSuccess }: CandidateFormProps) {
               {questionsGenerating ? (
                 <div className="flex flex-col items-center gap-3 py-6 rounded-xl" style={{ background: 'var(--fill-quaternary)' }}>
                   <div className="h-6 w-6 rounded-full animate-spin" style={{ border: '2px solid rgba(120,120,128,0.3)', borderTopColor: 'var(--blue)' }} />
-                  <p className="text-sm" style={{ color: 'var(--label-secondary)' }}>Generating tailored questions...</p>
+                  <p className="text-sm" style={{ color: 'var(--label-secondary)' }}>Analyzing resume &amp; generating tailored questions...</p>
+                  <p className="text-xs" style={{ color: 'var(--label-tertiary)' }}>Running skill gap analysis and resume truthfulness audit</p>
                 </div>
               ) : (
-                <div className="space-y-3 max-h-[520px] overflow-y-auto pr-1">
-                  {draftQuestions.map((q, index) => (
-                    <div key={index} className="p-3 rounded-xl space-y-2" style={{ background: 'var(--fill-quaternary)' }}>
-                      <div className="flex items-center gap-2">
-                        <span className="text-[10px] font-mono w-6" style={{ color: 'var(--label-tertiary)' }}>{index + 1}.</span>
-                        <select
-                          value={q.question_type}
-                          onChange={e => setDraftQuestion(index, 'question_type', e.target.value as DraftQuestionType)}
-                          className="input-field !py-1.5 !text-xs max-w-36"
-                          disabled={inviteMutation.isPending}
-                        >
-                          {QUESTION_TYPE_OPTIONS.map(type => (
-                            <option key={type} value={type}>{type}</option>
-                          ))}
-                        </select>
-                        <button
-                          type="button"
-                          onClick={() => removeDraftQuestion(index)}
-                          disabled={inviteMutation.isPending || draftQuestions.length <= 1}
-                          className="ml-auto p-1.5 rounded-lg transition disabled:opacity-40"
-                          style={{ color: 'var(--label-tertiary)' }}
-                          aria-label="Remove question"
-                        >
-                          <Trash2 size={14} />
-                        </button>
-                      </div>
-                      <textarea
-                        value={q.question_text}
-                        onChange={e => setDraftQuestion(index, 'question_text', e.target.value)}
-                        rows={3}
-                        className="input-field text-sm resize-y"
-                        placeholder="Write the interview question..."
-                        disabled={inviteMutation.isPending}
-                      />
+                <div className="space-y-3">
+                  {/* Question Intelligence Panel */}
+                  {(candidateAnalysis || resumeAudit) && draftQuestions.length > 0 && (
+                    <div
+                      className="rounded-xl overflow-hidden"
+                      style={{ border: '1px solid color-mix(in srgb, #f59e0b 30%, transparent)', background: 'color-mix(in srgb, #f59e0b 5%, transparent)' }}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => setShowIntelligencePanel(p => !p)}
+                        className="w-full flex items-center justify-between px-4 py-3 text-left"
+                      >
+                        <div className="flex items-center gap-2">
+                          <Shield size={14} style={{ color: '#f59e0b' }} />
+                          <span className="text-xs font-semibold" style={{ color: '#f59e0b' }}>Question Intelligence</span>
+                          {candidateAnalysis && candidateAnalysis.skills.filter(s => s.status === 'gap').length > 0 && (
+                            <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: 'color-mix(in srgb, #f59e0b 20%, transparent)', color: '#f59e0b' }}>
+                              {candidateAnalysis.skills.filter(s => s.status === 'gap').length} gaps
+                            </span>
+                          )}
+                          {resumeAudit && resumeAudit.claims.filter(c => c.suspicion_level === 'high').length > 0 && (
+                            <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: 'color-mix(in srgb, var(--red) 20%, transparent)', color: 'var(--red)' }}>
+                              {resumeAudit.claims.filter(c => c.suspicion_level === 'high').length} high-risk
+                            </span>
+                          )}
+                        </div>
+                        {showIntelligencePanel ? <ChevronUp size={14} style={{ color: '#f59e0b' }} /> : <ChevronDown size={14} style={{ color: '#f59e0b' }} />}
+                      </button>
+
+                      {showIntelligencePanel && (
+                        <div className="px-4 pb-4 space-y-4">
+                          {/* Skill analysis */}
+                          {candidateAnalysis && (
+                            <div>
+                              <p className="text-[10px] font-semibold uppercase tracking-wide mb-2 flex items-center gap-1" style={{ color: 'var(--label-tertiary)' }}>
+                                <Search size={10} />
+                                Skill Gap Analysis
+                                {candidateAnalysis.skills.length === 0 && (
+                                  <span className="text-[9px] font-normal ml-2 px-1.5 py-0.5 rounded" style={{ background: 'color-mix(in srgb, #f59e0b 20%, transparent)', color: '#f59e0b' }}>
+                                    analysis unavailable
+                                  </span>
+                                )}
+                              </p>
+                              {candidateAnalysis.skills.length > 0 ? (
+                                <>
+                                  <div className="flex flex-wrap gap-1.5">
+                                    {candidateAnalysis.skills.sort((a, b) => a.priority - b.priority).slice(0, 18).map((s, i) => (
+                                      <span
+                                        key={i}
+                                        className="text-[10px] px-2 py-1 rounded-full font-medium"
+                                        style={{
+                                          background: s.status === 'match'
+                                            ? 'color-mix(in srgb, var(--green) 15%, transparent)'
+                                            : s.status === 'gap'
+                                            ? 'color-mix(in srgb, var(--red) 15%, transparent)'
+                                            : 'color-mix(in srgb, var(--blue) 15%, transparent)',
+                                          color: s.status === 'match' ? 'var(--green)' : s.status === 'gap' ? 'var(--red)' : 'var(--blue)',
+                                          border: `1px solid ${s.status === 'match' ? 'color-mix(in srgb, var(--green) 30%, transparent)' : s.status === 'gap' ? 'color-mix(in srgb, var(--red) 30%, transparent)' : 'color-mix(in srgb, var(--blue) 30%, transparent)'}`
+                                        }}
+                                        title={s.evidence || s.status}
+                                      >
+                                        {s.status === 'match' ? '✓' : s.status === 'gap' ? '✗' : '+'} {s.skill}
+                                      </span>
+                                    ))}
+                                  </div>
+                                  <div className="flex gap-3 mt-2">
+                                    {(['match', 'gap', 'strength'] as const).map(st => (
+                                      <span key={st} className="text-[10px]" style={{ color: 'var(--label-tertiary)' }}>
+                                        <span style={{ color: st === 'match' ? 'var(--green)' : st === 'gap' ? 'var(--red)' : 'var(--blue)' }}>●</span>{' '}
+                                        {st}: {candidateAnalysis.skills.filter(s => s.status === st).length}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </>
+                              ) : (
+                                <p className="text-[10px] italic" style={{ color: 'var(--label-tertiary)' }}>{candidateAnalysis.summary || 'No skills were extracted from the resume.'}</p>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Question-to-Gap mapping */}
+                          {candidateAnalysis && candidateAnalysis.skills.filter(s => s.status === 'gap').length > 0 && (
+                            <div>
+                              <p className="text-[10px] font-semibold uppercase tracking-wide mb-2" style={{ color: 'var(--label-tertiary)' }}>Question-to-Gap Mapping</p>
+                              <div className="space-y-1.5">
+                                {candidateAnalysis.skills
+                                  .filter(s => s.status === 'gap')
+                                  .sort((a, b) => a.priority - b.priority)
+                                  .slice(0, 6)
+                                  .map((skill, i) => {
+                                    const targetingQuestions = draftQuestions
+                                      .map((q, qi) => ({ q, qi }))
+                                      .filter(({ q }) => q.strategy && q.strategy.toLowerCase().includes(skill.skill.toLowerCase()))
+                                    return (
+                                      <div key={i} className="flex items-center gap-2 text-[10px]" style={{ color: 'var(--label-secondary)' }}>
+                                        <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: 'var(--red)' }} />
+                                        <span className="font-medium">{skill.skill}</span>
+                                        {targetingQuestions.length > 0 ? (
+                                          <span style={{ color: 'var(--label-tertiary)' }}>
+                                            → Q{targetingQuestions.map(t => t.qi + 1).join(', Q')}
+                                          </span>
+                                        ) : (
+                                          <span className="italic" style={{ color: 'var(--label-tertiary)' }}>not explicitly targeted</span>
+                                        )}
+                                      </div>
+                                    )
+                                  })}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Resume truthfulness audit */}
+                          {resumeAudit && (
+                            <div>
+                              <p className="text-[10px] font-semibold uppercase tracking-wide mb-2 flex items-center gap-1" style={{ color: 'var(--label-tertiary)' }}>
+                                <Search size={10} />
+                                Resume Claims Under Scrutiny
+                                {resumeAudit.claims.length > 0 && (
+                                  <span className="font-normal ml-auto" style={{ color: 'var(--label-tertiary)' }}>
+                                    {resumeAudit.claims.filter(c => c.suspicion_level === 'high').length} high · {resumeAudit.claims.filter(c => c.suspicion_level === 'medium').length} medium · {resumeAudit.claims.filter(c => c.suspicion_level === 'low').length} low
+                                  </span>
+                                )}
+                                {resumeAudit.claims.length === 0 && (
+                                  <span className="text-[9px] font-normal ml-2 px-1.5 py-0.5 rounded" style={{ background: 'color-mix(in srgb, #f59e0b 20%, transparent)', color: '#f59e0b' }}>
+                                    unavailable
+                                  </span>
+                                )}
+                              </p>
+                              {resumeAudit.claims.length > 0 ? (
+                                <div className="space-y-2">
+                                  {resumeAudit.claims.map((claim, i) => (
+                                    <div
+                                      key={i}
+                                      className="rounded-lg p-2.5"
+                                      style={{
+                                        background: claim.suspicion_level === 'high'
+                                          ? 'color-mix(in srgb, var(--red) 8%, transparent)'
+                                          : claim.suspicion_level === 'medium'
+                                          ? 'color-mix(in srgb, #f59e0b 8%, transparent)'
+                                          : 'var(--fill-quaternary)',
+                                        border: `1px solid ${claim.suspicion_level === 'high' ? 'color-mix(in srgb, var(--red) 20%, transparent)' : claim.suspicion_level === 'medium' ? 'color-mix(in srgb, #f59e0b 20%, transparent)' : 'var(--separator)'}`
+                                      }}
+                                    >
+                                      <div className="flex items-start justify-between gap-2 mb-1">
+                                        <p className="text-[10px] font-medium" style={{ color: 'var(--label-primary)' }}>"{claim.claim}"</p>
+                                        <span
+                                          className="text-[9px] px-1.5 py-0.5 rounded-full shrink-0 font-semibold"
+                                          style={{
+                                            background: claim.suspicion_level === 'high' ? 'color-mix(in srgb, var(--red) 20%, transparent)' : claim.suspicion_level === 'medium' ? 'color-mix(in srgb, #f59e0b 20%, transparent)' : 'var(--fill-tertiary)',
+                                            color: claim.suspicion_level === 'high' ? 'var(--red)' : claim.suspicion_level === 'medium' ? '#f59e0b' : 'var(--label-secondary)'
+                                          }}
+                                        >
+                                          {claim.suspicion_level}
+                                        </span>
+                                      </div>
+                                      <p className="text-[10px]" style={{ color: 'var(--label-tertiary)' }}>{claim.rationale}</p>
+                                      <p className="text-[10px] mt-1 italic" style={{ color: 'var(--label-secondary)' }}>Probe: {claim.probe_question}</p>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <p className="text-[10px] italic" style={{ color: 'var(--label-tertiary)' }}>{resumeAudit.summary || 'No resume claims were extracted for verification.'}</p>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
-                  ))}
+                  )}
+
+                  {/* Question list */}
+                  <div className="space-y-3 max-h-[520px] overflow-y-auto pr-1">
+                    {draftQuestions.map((q, index) => {
+                      const matchedSkills = candidateAnalysis?.skills.filter(
+                        s => q.strategy && q.strategy.toLowerCase().includes(s.skill.toLowerCase())
+                      ) || []
+                      return (
+                      <div key={index} className="p-3 rounded-xl space-y-2" style={{ background: 'var(--fill-quaternary)' }}>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] font-mono w-6" style={{ color: 'var(--label-tertiary)' }}>{index + 1}.</span>
+                          <select
+                            value={q.question_type}
+                            onChange={e => setDraftQuestion(index, 'question_type', e.target.value as DraftQuestionType)}
+                            className="input-field !py-1.5 !text-xs max-w-36"
+                            disabled={inviteMutation.isPending}
+                          >
+                            {QUESTION_TYPE_OPTIONS.map(type => (
+                              <option key={type} value={type}>{type}</option>
+                            ))}
+                          </select>
+                          <button
+                            type="button"
+                            onClick={() => removeDraftQuestion(index)}
+                            disabled={inviteMutation.isPending || draftQuestions.length <= 1}
+                            className="ml-auto p-1.5 rounded-lg transition disabled:opacity-40"
+                            style={{ color: 'var(--label-tertiary)' }}
+                            aria-label="Remove question"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                        <textarea
+                          value={q.question_text}
+                          onChange={e => setDraftQuestion(index, 'question_text', e.target.value)}
+                          rows={3}
+                          className="input-field text-sm resize-y"
+                          placeholder="Write the interview question..."
+                          disabled={inviteMutation.isPending}
+                        />
+                        {q.strategy && q.strategy.startsWith('Verification probe for:') && (
+                          <div className="flex items-start gap-1.5">
+                            <span
+                              className="text-[10px] px-2 py-0.5 rounded font-medium shrink-0"
+                              style={{
+                                background: 'color-mix(in srgb, #f59e0b 12%, transparent)',
+                                color: '#f59e0b',
+                                border: '1px solid color-mix(in srgb, #f59e0b 20%, transparent)'
+                              }}
+                            >
+                              Why this question?
+                            </span>
+                            <span className="text-[10px]" style={{ color: 'var(--label-tertiary)' }}>{q.strategy}</span>
+                          </div>
+                        )}
+                        {matchedSkills.length > 0 && (
+                          <div className="flex flex-wrap gap-1">
+                            {matchedSkills.map((skill, si) => (
+                              <span
+                                key={si}
+                                className="text-[9px] px-1.5 py-0.5 rounded-full font-medium"
+                                style={{
+                                  background: skill.status === 'match'
+                                    ? 'color-mix(in srgb, var(--green) 15%, transparent)'
+                                    : skill.status === 'gap'
+                                    ? 'color-mix(in srgb, var(--red) 15%, transparent)'
+                                    : 'color-mix(in srgb, var(--blue) 15%, transparent)',
+                                  color: skill.status === 'match' ? 'var(--green)' : skill.status === 'gap' ? 'var(--red)' : 'var(--blue)',
+                                  border: `1px solid ${skill.status === 'match' ? 'color-mix(in srgb, var(--green) 30%, transparent)' : skill.status === 'gap' ? 'color-mix(in srgb, var(--red) 30%, transparent)' : 'color-mix(in srgb, var(--blue) 30%, transparent)'}`
+                                }}
+                              >
+                                {skill.status === 'match' ? '✓' : skill.status === 'gap' ? '✗' : '+'} {skill.skill}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )})}
+                  </div>
                 </div>
               )}
             </div>

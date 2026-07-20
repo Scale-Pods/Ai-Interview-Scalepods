@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import {
-  Clock, User, CheckCircle, Send, FileText, XCircle, AlertTriangle,
+  Clock, CheckCircle, Send, FileText, XCircle, AlertTriangle,
   Mail, Play, Flag
 } from 'lucide-react'
 import { supabase } from '@/api/client'

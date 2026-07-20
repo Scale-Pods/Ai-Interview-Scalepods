@@ -8,6 +8,9 @@ export interface TranscriptEntry {
   answer: string
   orderIndex: number
   createdAt: string
+  source?: string
+  parentQuestionId?: string | null
+  insufficiencyReason?: string | null
 }
 
 export async function fetchTranscript(sessionId: string): Promise<TranscriptEntry[]> {
@@ -35,12 +38,17 @@ export async function fetchTranscript(sessionId: string): Promise<TranscriptEntr
     if (a.answer_text) answerMap.set(a.question_id, a.answer_text)
   }
 
-  return qs.map((q) => ({
+  // Planned and dynamically queued questions are not transcript entries until
+  // the candidate has actually answered them.
+  return qs.filter(q => answerMap.has(q.id)).map((q) => ({
     questionId: q.id,
     question: q.question_text,
     questionType: q.question_type,
     answer: answerMap.get(q.id) || '',
     orderIndex: q.order_index,
-    createdAt: q.created_at
+    createdAt: q.created_at,
+    source: q.source,
+    parentQuestionId: q.parent_question_id,
+    insufficiencyReason: q.insufficiency_reason
   }))
 }

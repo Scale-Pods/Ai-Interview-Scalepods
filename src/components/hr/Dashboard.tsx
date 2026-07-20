@@ -1,7 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, ResponsiveContainer, Tooltip, Cell, PieChart, Pie, AreaChart, Area } from 'recharts'
 import {
-  LayoutDashboard, Users, Clock, CheckCircle, TrendingUp, Activity,
+  LayoutDashboard, Users, Clock, TrendingUp, Activity,
   Send, Play, UserPlus, RefreshCw, Sparkles, ArrowUpRight, ArrowDownRight
 } from 'lucide-react'
 import { fetchDashboardStats } from '@/api/candidates'
@@ -342,7 +342,7 @@ export function Dashboard() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard label="Total Sessions" value={stats.totalSessions} icon={Users} color="blue" subtitle="all time" />
+        <StatCard label="Total Candidates" value={stats.totalCandidates} icon={Users} color="blue" subtitle={`${stats.totalSessions} sessions`} />
         <StatCard label="Invited Today" value={stats.invitedToday} icon={Send} trend={stats.invitedToday > 0 ? stats.invitedToday * 20 : 0} color="amber" subtitle={`${stats.pendingInvites} pending`} />
         <StatCard label="In Progress" value={stats.startedToday} icon={Play} color="violet" subtitle="started today" />
         <StatCard label="Avg Score" value={`${stats.averageScore}%`} icon={TrendingUp} color="green" subtitle={`${stats.completedInterviews} completed`} />

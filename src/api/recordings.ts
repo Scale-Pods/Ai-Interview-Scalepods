@@ -46,7 +46,7 @@ export async function getRecordingUploadUrl(
 ): Promise<string> {
   const { data, error } = await supabase
     .storage
-    .from('recordings_ai_interview')
+    .from('recordings')
     .createSignedUploadUrl(`recording_${recordingId}.webm`)
   if (error) throw error
   return data.signedUrl

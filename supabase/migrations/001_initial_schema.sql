@@ -25,7 +25,7 @@ CREATE TABLE job_descriptions (
   candidate_id  UUID REFERENCES candidates(id) ON DELETE CASCADE,
   raw_text      TEXT NOT NULL,
   parsed_skills TEXT[] DEFAULT '{}',
-  parsed_years_experience INT,
+  parsed_years_experience DECIMAL(4,1),
   parsed_roles  TEXT[] DEFAULT '{}',
   created_at    TIMESTAMPTZ DEFAULT now()
 );
