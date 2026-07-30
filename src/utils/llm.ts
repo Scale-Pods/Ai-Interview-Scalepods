@@ -595,7 +595,7 @@ async function callGroq(prompt: string, apiKey: string): Promise<string> {
 }
 
 async function callOpenAI(prompt: string, apiKey: string): Promise<string> {
-  const model = import.meta.env.VITE_OPENAI_MODEL || 'gpt-4.1-mini'
+  const model = import.meta.env.VITE_OPENAI_MODEL || 'gpt-4o-mini'
   const url = 'https://api.openai.com/v1/chat/completions'
   const response = await fetch(url, {
     method: 'POST',
