@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { getAudioStream } from '@/utils/mediaHelpers'
+import { normalizeTechnicalSpeech } from '@/utils/speechNormalizer'
 
 const SILENCE_TIMEOUT_MS = 4000
 const COUNTDOWN_TENTHS = Math.floor(SILENCE_TIMEOUT_MS / 100)
@@ -266,8 +267,9 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
             final += event.results[i][0].transcript
           }
           
-          setTranscript(final)
-          transcriptRef.current = final
+          const normalized = normalizeTechnicalSpeech(final)
+          setTranscript(normalized)
+          transcriptRef.current = normalized
 
           if (isVoiceActiveRef.current) {
             clearCountdown()
@@ -393,13 +395,26 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
               style={{ background: 'var(--fill-quaternary)' }}
             />
 
-            <div className="rounded-xl p-4 min-h-[50px]" style={{ background: 'var(--fill-quaternary)' }}>
-              {transcript ? (
-                <p className="text-sm leading-relaxed font-medium" style={{ color: 'var(--label-primary)' }}>{transcript}</p>
-              ) : (
-                <p className="text-sm italic" style={{ color: 'var(--label-tertiary)' }}>Speak your response now...</p>
-              )}
-            </div>
+            <textarea
+              value={transcript}
+              onChange={(e) => {
+                const val = e.target.value
+                setTranscript(val)
+                transcriptRef.current = val
+                if (isVoiceActiveRef.current) {
+                  clearCountdown()
+                } else if (val.trim().length > 0) {
+                  startCountdown()
+                }
+              }}
+              placeholder="Speak your response now (you can also edit or type words here)..."
+              className="w-full text-sm leading-relaxed font-medium rounded-xl p-3 min-h-[70px] resize-y transition-all"
+              style={{
+                background: 'var(--fill-quaternary)',
+                border: '1px solid var(--separator)',
+                color: 'var(--label-primary)'
+              }}
+            />
 
             <div className="flex items-center justify-between gap-3">
               <p className="text-[10px]" style={{ color: 'var(--label-tertiary)' }}>

@@ -415,16 +415,7 @@ export function InterviewRoom() {
               }}
               questionNumber={currentQuestionIndex}
               totalQuestions={progressTarget}
-              interviewerLeadIn={(() => {
-                const full = currentTurn.interviewer_text || ''
-                const question = currentTurn.question_text || ''
-                if (!question || full === question) return undefined
-                // Only show lead-in if interviewer_text genuinely wraps the question
-                // (i.e. contains the question as a substring with a preamble before it)
-                const idx = full.indexOf(question)
-                if (idx > 0) return full.slice(0, idx).trim() || undefined
-                return undefined
-              })()}
+              interviewerUtterance={currentTurn.interviewer_text}
             />
           )}
 

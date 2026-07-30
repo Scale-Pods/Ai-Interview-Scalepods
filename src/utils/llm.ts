@@ -1,5 +1,5 @@
 // Unified Client-Side LLM Helper for Dynamic Interview Questions
-import type { LiveAssessmentNote, AuthenticitySignal, InterviewerTurn, InterviewerTurnType, InterviewBlueprint, InterviewPlanItem, AnswerInsufficiencyReason, JdTool } from '@/types'
+import type { LiveAssessmentNote, AuthenticitySignal, InterviewerTurn, InterviewerTurnType, InterviewBlueprint, InterviewPlanItem, AnswerInsufficiencyReason, JdTool, ResumeJdAlignment, FlaggedGap, PlanItemCategory } from '@/types'
 
 function extractJSON(raw: string): string {
   const noFences = raw.replace(/```json/gi, '').replace(/```/g, '').trim()
@@ -13,6 +13,7 @@ function extractJSON(raw: string): string {
 const truncate = (text: string, max: number) => text.length > max ? text.slice(0, max) + '...[truncated]' : text
 
 interface HistoryItem {
+  id?: string
   question: string
   answer: string
   type: string
@@ -50,11 +51,96 @@ export interface CandidateAnalysis {
   summary: string
   /** Named tools/technologies extracted directly from the JD. Populated by extractJdToolsAndTech(). */
   extractedTools?: JdTool[]
+  /** Resume vs JD alignment analysis (domain alignment, experience gaps, flagged gaps). */
+  alignment?: ResumeJdAlignment
+}
+
+// -------------------------------------------------------------------
+// Resume & JD Alignment Analyzer
+// Runs once per session to identify domain mismatches, experience gaps,
+// and specific flagged gaps that require empathetic recruiter probing.
+// -------------------------------------------------------------------
+export async function analyzeResumeJdAlignment(
+  resumeText: string,
+  jdText: string
+): Promise<ResumeJdAlignment> {
+  const fallback: ResumeJdAlignment = {
+    domain_alignment: 'aligned',
+    domain_reasoning: 'Standard alignment check.',
+    experience_gap: {
+      jd_required_years: null,
+      candidate_years: null,
+      status: 'aligned',
+      reasoning: 'No clear experience gap identified.'
+    },
+    flagged_gaps: []
+  }
+
+  if (!resumeText || !jdText) return fallback
+
+  const prompt = `You are a senior technical recruiter analyzing the alignment between a candidate's resume and a job description.
+Your goal is to detect GENUINE gaps — domain mismatches, experience-level gaps, or stack discrepancies — that an HR recruiter would probe during an initial screening call.
+
+RULES:
+1. ONLY flag genuine, real gaps supported by the resume and JD text (e.g. non-technical sales/BD experience applying for software engineer, or 2 years candidate applying for 8+ year staff role, or backend candidate applying for mobile iOS role).
+2. DO NOT invent gaps if the candidate is well-matched! If the candidate is a good fit, return an empty array [] for flagged_gaps.
+3. For each flagged gap, probe_direction MUST be phrased warm, respectful, curious, and non-accusatory — how an empathetic human recruiter would ask it to understand if the gap is explainable or transferable.
+
+Job Description:
+"""
+${truncate(jdText, 3000)}
+"""
+
+Candidate Resume:
+"""
+${truncate(resumeText, 3000)}
+"""
+
+Return ONLY JSON matching this schema:
+{
+  "domain_alignment": "aligned" | "partial" | "mismatched",
+  "domain_reasoning": "string",
+  "experience_gap": {
+    "jd_required_years": number | null,
+    "candidate_years": number | null,
+    "status": "underqualified" | "overqualified" | "aligned" | "unclear",
+    "reasoning": "string"
+  },
+  "flagged_gaps": [
+    {
+      "gap_type": "domain_mismatch" | "experience_mismatch" | "stack_mismatch" | "seniority_mismatch",
+      "description": "concise 1-sentence description of the gap",
+      "probe_direction": "warm, curious, non-accusatory recruiter probe direction"
+    }
+  ]
+}`
+
+  try {
+    const raw = await generateCompletion(prompt)
+    const parsed = JSON.parse(extractJSON(raw))
+    return {
+      domain_alignment: parsed.domain_alignment || 'aligned',
+      domain_reasoning: parsed.domain_reasoning || '',
+      experience_gap: {
+        jd_required_years: parsed.experience_gap?.jd_required_years ?? null,
+        candidate_years: parsed.experience_gap?.candidate_years ?? null,
+        status: parsed.experience_gap?.status || 'aligned',
+        reasoning: parsed.experience_gap?.reasoning || ''
+      },
+      flagged_gaps: Array.isArray(parsed.flagged_gaps) ? parsed.flagged_gaps : []
+    }
+  } catch (err) {
+    console.warn('[analyzeResumeJdAlignment] Failed, returning fallback:', err)
+    return fallback
+  }
 }
 
 function fallbackBlueprint(sessionId: string, analysis: CandidateAnalysis): InterviewBlueprint {
-  // Prefer named tools extracted from the JD; fall back to skills from the fit analysis.
   const tools = analysis.extractedTools || []
+  const alignment = analysis.alignment
+  const flaggedGaps = alignment?.flagged_gaps || []
+
+  // Build competencies
   const sourceItems = tools.length > 0
     ? tools.slice(0, 6).map((t, i) => ({
         id: `competency-${i + 1}`,
@@ -75,64 +161,184 @@ function fallbackBlueprint(sessionId: string, analysis: CandidateAnalysis): Inte
     description: 'Ability to perform the core responsibilities of the role.',
     expected_evidence: ['Relevant experience', 'Reasoning', 'Concrete outcomes']
   }]
-  const types: InterviewPlanItem['question_type'][] = ['technical', 'technical', 'situational', 'behavioral', 'technical', 'cultural']
+
+  // Check resume-only skills
+  const resumeOnlySkill = analysis.skills.find(s => s.status === 'strength' || (s.source === 'resume_claimed' && s.status !== 'match'))
+  const hasResumeOnly = Boolean(resumeOnlySkill)
+
+  // Composition calculation for 10 primary questions:
+  // - 4 technical_jd (base)
+  // - 1 technical_resume (if available, else convert to technical_jd)
+  // - Up to 2 gap_probe (from real flagged gaps; convert unused slots to technical_jd)
+  // - 1 problem_solving (case scenario)
+  // - 2 cultural
+  const actualGapProbes = flaggedGaps.slice(0, 2)
+  const numGapSlots = actualGapProbes.length
+  const unusedGapSlots = 2 - numGapSlots
+  const unusedResumeSlots = hasResumeOnly ? 0 : 1
+
+  const numTechJdNeeded = 4 + unusedGapSlots + unusedResumeSlots
+
+  const planItems: InterviewPlanItem[] = []
+  let planIdCounter = 1
+
+  // (A) technical_jd questions
+  for (let i = 0; i < numTechJdNeeded; i++) {
+    const tool = tools[i % tools.length]
+    const compId = safeCompetencies[i % safeCompetencies.length]?.id || 'role-fit'
+    planItems.push({
+      id: `plan-${planIdCounter++}`,
+      category: 'technical_jd',
+      competency_ids: [compId],
+      target_tool: tool?.name || safeCompetencies[i % safeCompetencies.length]?.name || 'Core Skill',
+      verification_mode: (tool ? (tool.mentioned_in_resume ? 'verify_claim' : 'baseline_check') : 'baseline_check'),
+      objective: `Evaluate core JD technical capability in ${tool?.name || 'the required tool'}.`,
+      question_type: 'technical',
+      difficulty: i < 2 ? 'foundation' : 'applied'
+    })
+  }
+
+  // (B) technical_resume question (if available)
+  if (hasResumeOnly) {
+    const compId = safeCompetencies[0]?.id || 'role-fit'
+    planItems.push({
+      id: `plan-${planIdCounter++}`,
+      category: 'technical_resume',
+      competency_ids: [compId],
+      target_tool: resumeOnlySkill?.skill || 'Claimed Skill',
+      verification_mode: 'verify_claim',
+      objective: `Validate hands-on depth in candidate's claimed resume skill: ${resumeOnlySkill?.skill}`,
+      question_type: 'technical',
+      difficulty: 'applied'
+    })
+  }
+
+  // (C) gap_probe questions (up to 2, only from real flagged gaps)
+  for (let i = 0; i < actualGapProbes.length; i++) {
+    const gap = actualGapProbes[i]
+    planItems.push({
+      id: `plan-${planIdCounter++}`,
+      category: 'gap_probe',
+      competency_ids: [safeCompetencies[0]?.id || 'role-fit'],
+      objective: `Probe flagged alignment gap: ${gap.description}`,
+      question_type: 'situational',
+      difficulty: 'applied',
+      gap_ref: gap
+    })
+  }
+
+  // (D) problem_solving question (1 scenario case question)
+  planItems.push({
+    id: `plan-${planIdCounter++}`,
+    category: 'problem_solving',
+    competency_ids: [safeCompetencies[0]?.id || 'role-fit'],
+    objective: 'Test practical scenario-based problem solving, trade-off analysis, and technical reasoning.',
+    question_type: 'situational',
+    difficulty: 'applied'
+  })
+
+  // (E) cultural questions (2 items)
+  planItems.push({
+    id: `plan-${planIdCounter++}`,
+    category: 'cultural',
+    competency_ids: [safeCompetencies[0]?.id || 'role-fit'],
+    objective: 'Evaluate teamwork, communication, handling disagreements, and feedback.',
+    question_type: 'cultural',
+    difficulty: 'foundation'
+  })
+  planItems.push({
+    id: `plan-${planIdCounter++}`,
+    category: 'cultural',
+    competency_ids: [safeCompetencies[0]?.id || 'role-fit'],
+    objective: 'Assess work style preferences, adaptability, and team environment fit.',
+    question_type: 'cultural',
+    difficulty: 'foundation'
+  })
+
   return {
     session_id: sessionId,
     version: 'v1',
     competencies: safeCompetencies,
-    question_plan: safeCompetencies.slice(0, 6).map((competency, index) => {
-      const tool = tools[index]
-      return {
-        id: `plan-${index + 1}`,
-        competency_ids: [competency.id],
-        target_tool: tool?.name || competency.name,
-        verification_mode: (tool ? (tool.mentioned_in_resume ? 'verify_claim' : 'baseline_check') : 'baseline_check') as 'verify_claim' | 'baseline_check',
-        objective: `Collect evidence for ${competency.name}: ${competency.description}`,
-        question_type: types[index] || 'technical',
-        difficulty: (index < 3 ? 'foundation' : 'applied') as 'foundation' | 'applied'
-      }
-    }),
+    question_plan: planItems,
     candidate_summary: {
       strengths: analysis.skills.filter(s => s.status === 'match' || s.status === 'strength').slice(0, 3).map(s => s.skill),
       gaps: analysis.skills.filter(s => s.status === 'gap').slice(0, 3).map(s => s.skill),
       claims_to_validate: analysis.projectMappings.slice(0, 3).map(p => p.resumeProject)
     },
-    constraints: { max_primary_questions: 8, max_follow_ups_per_question: 1 }
+    constraints: { max_primary_questions: 10, max_follow_ups_per_question: 1 }
   }
 }
 
 export async function generateInterviewBlueprint(sessionId: string, resumeText: string, jdText: string, analysis: CandidateAnalysis): Promise<InterviewBlueprint> {
   const fallback = fallbackBlueprint(sessionId, analysis)
   const extractedTools = analysis.extractedTools || []
+  const alignment = analysis.alignment
+  const flaggedGaps = alignment?.flagged_gaps || []
 
   const toolsContext = extractedTools.length > 0
-    ? `\nExtracted JD tools/technologies (6-10 specific named tools pulled from the JD):\n${JSON.stringify(extractedTools, null, 2)}\n\nIMPORTANT: Map competencies DIRECTLY to these named tools (e.g. competency name = "React" or "React + TypeScript", NOT "Frontend Development"). Each plan item MUST have target_tool set to one of these exact tool names.`
+    ? `\nExtracted JD tools/technologies (6-10 specific named tools pulled from the JD):\n${JSON.stringify(extractedTools, null, 2)}`
     : ''
 
-  const prompt = `You are designing a focused, practical screening interview plan. This is an EASY-TO-MEDIUM round — not a senior systems design or internals deep-dive. Return ONLY JSON matching this schema:
-{"competencies":[{"id":"short-kebab-id","name":"SPECIFIC TOOL NAME (e.g. React, PostgreSQL)","weight":1,"description":"string","expected_evidence":["string"]}],"question_plan":[{"id":"plan-1","competency_ids":["competency-id"],"target_tool":"React","verification_mode":"verify_claim|baseline_check","objective":"string","question_type":"technical|behavioral|situational|cultural","difficulty":"foundation|applied"}],"candidate_summary":{"strengths":["string"],"gaps":["string"],"claims_to_validate":["string"]},"constraints":{"max_primary_questions":8,"max_follow_ups_per_question":1}}
+  const gapsContext = flaggedGaps.length > 0
+    ? `\nFlagged alignment gaps from resume vs JD analysis:\n${JSON.stringify(flaggedGaps, null, 2)}`
+    : '\nFlagged alignment gaps: None (candidate is well-aligned with the role).'
+
+  const prompt = `You are designing a realistic screening interview plan (10 primary questions total) that mirrors how a human HR & technical recruiter screens a candidate.
+
+TARGET COMPOSITION (EXACTLY 10 QUESTIONS):
+1. technical_jd (4-7 items): JD-required named tools (must_have importance first).
+2. technical_resume (0-1 item): candidate's resume-only tool to verify depth. Skip if no resume-only tool.
+3. gap_probe (0-2 items): probe real flagged alignment gaps. ONLY create gap_probe items if real gaps exist in the analysis below! Do NOT invent gaps. Convert any unused gap slots to technical_jd.
+4. problem_solving (1 item): scenario/case-based reasoning question (no target_tool).
+5. cultural (2 items): work style, teamwork, feedback, collaboration.
 
 RULES:
-1. Create 4-6 competencies named after SPECIFIC tools (e.g. "React", "Docker", "REST APIs") — NOT abstract categories like "Frontend Development" or "DevOps".
-2. Create 6-8 plan items, each testing a specific tool.
-3. For each plan item set:
-   - target_tool: exact tool name from the extracted tools list.
-   - verification_mode: "verify_claim" if the tool appears in the candidate's resume (we validate their stated experience), or "baseline_check" if it's JD-only (we check basic awareness only).
-   - difficulty: ONLY "foundation" or "applied" — NEVER "advanced", "expert", or "senior". This is a screening round.
-4. A plan item objective must be concrete evidence-seeking, not a generic topic.
-5. Do not infer protected traits or cultural similarity.${toolsContext}
-Job description:\n${truncate(jdText, 3000)}
-Resume:\n${truncate(resumeText, 3000)}
-Fit analysis:\n${JSON.stringify({ summary: analysis.summary, skills: analysis.skills.slice(0, 10) })}`
+- Map competencies to SPECIFIC named tools (e.g. "React", "PostgreSQL").
+- Difficulty must be "foundation" or "applied" only.
+${toolsContext}
+${gapsContext}
+
+Job description:
+"""
+${truncate(jdText, 3000)}
+"""
+Resume:
+"""
+${truncate(resumeText, 3000)}
+"""
+
+Return ONLY JSON matching:
+{
+  "competencies": [{"id":"short-kebab-id","name":"SPECIFIC TOOL NAME","weight":1,"description":"string","expected_evidence":["string"]}],
+  "question_plan": [
+    {
+      "id": "plan-1",
+      "category": "technical_jd|technical_resume|gap_probe|problem_solving|cultural",
+      "competency_ids": ["competency-id"],
+      "target_tool": "React",
+      "verification_mode": "verify_claim|baseline_check",
+      "objective": "string",
+      "question_type": "technical|behavioral|situational|cultural",
+      "difficulty": "foundation|applied",
+      "gap_ref": { "gap_type": "domain_mismatch", "description": "string", "probe_direction": "string" }
+    }
+  ],
+  "candidate_summary": {"strengths":["string"],"gaps":["string"],"claims_to_validate":["string"]},
+  "constraints": {"max_primary_questions":10,"max_follow_ups_per_question":1}
+}`
+
   try {
     const parsed = JSON.parse(extractJSON(await generateCompletion(prompt)))
     if (!Array.isArray(parsed.competencies) || !Array.isArray(parsed.question_plan)) return fallback
     return {
       ...fallback,
       competencies: parsed.competencies,
-      question_plan: parsed.question_plan,
+      question_plan: parsed.question_plan.map((item: any, idx: number) => ({
+        ...item,
+        category: item.category || fallback.question_plan[idx]?.category || 'technical_jd'
+      })),
       candidate_summary: parsed.candidate_summary || fallback.candidate_summary,
-      constraints: { ...fallback.constraints, ...(parsed.constraints || {}) }
+      constraints: { ...fallback.constraints, max_primary_questions: 10, max_follow_ups_per_question: 1 }
     }
   } catch (error) {
     console.warn('[generateInterviewBlueprint] Falling back to deterministic blueprint:', error)
@@ -141,49 +347,6 @@ Fit analysis:\n${JSON.stringify({ summary: analysis.summary, skills: analysis.sk
 }
 
 const TOTAL_WANTED_JOB_QUESTIONS = 10
-
-const FALLBACK_QUESTIONS: Array<Pick<QuestionResponse, 'question_text' | 'question_type'>> = [
-  {
-    question_text: "What is a fundamental concept from this role's core technology and why is it important?",
-    question_type: "technical"
-  },
-  {
-    question_text: "Compare two approaches or tools used in this domain — what are the tradeoffs and when would you pick each?",
-    question_type: "technical"
-  },
-  {
-    question_text: "Explain a design pattern or architectural principle relevant to this role and describe a situation where you applied it.",
-    question_type: "technical"
-  },
-  {
-    question_text: "Walk me through how you would approach building a feature or solving a real-world problem in this role's primary technology.",
-    question_type: "technical"
-  },
-  {
-    question_text: "Describe a time you debugged a complex issue — what was your process and how did you identify the root cause?",
-    question_type: "situational"
-  },
-  {
-    question_text: "Which project or experience on your resume best matches this job description, and what was your exact contribution to it?",
-    question_type: "technical"
-  },
-  {
-    question_text: "Looking at your resume against this job description, which missing or lighter experience area would you prioritize improving first, and how would you do it?",
-    question_type: "situational"
-  },
-  {
-    question_text: "Pick one resume project or past role that relates to a JD requirement and explain how that experience would transfer to this position.",
-    question_type: "technical"
-  },
-  {
-    question_text: "How do you prefer to collaborate with teammates, handle disagreements, and give or receive feedback?",
-    question_type: "cultural"
-  },
-  {
-    question_text: "What kind of team culture helps you do your best work, and how do you contribute to that environment?",
-    question_type: "cultural"
-  }
-]
 
 const INTERVIEW_PLAN: Array<{
   category: string
@@ -269,19 +432,116 @@ export function hasSimilarQuestionBeenAsked(question: string, existingQuestions:
   return existingQuestions.some(item => isSimilarQuestion(item, question))
 }
 
-export function getFallbackQuestion(totalQuestions: number, existingQuestions: string[], reason: string): QuestionResponse {
-  const preferredIndex = Math.max(0, Math.min(totalQuestions, FALLBACK_QUESTIONS.length - 1))
-  const orderedFallbacks = [
-    ...FALLBACK_QUESTIONS.slice(preferredIndex),
-    ...FALLBACK_QUESTIONS.slice(0, preferredIndex)
+export function getDynamicCandidateQuestion(
+  totalQuestions: number,
+  existingQuestions: string[],
+  analysis: CandidateAnalysis | null,
+  planItem?: InterviewPlanItem | null,
+  reason: string = "Dynamic candidate question"
+): QuestionResponse {
+  // 1. If planItem is provided, construct a question from its target_tool, gap_ref, or objective
+  if (planItem) {
+    if (planItem.target_tool && !hasSimilarQuestionBeenAsked(planItem.target_tool, existingQuestions)) {
+      const mode = planItem.verification_mode || 'verify_claim'
+      const text = mode === 'verify_claim'
+        ? `Could you share a practical example of how you used ${planItem.target_tool} in your recent work, focusing on your specific contribution?`
+        : `Could you explain what problem ${planItem.target_tool} solves and when you would recommend using it?`
+      return {
+        question_text: text,
+        question_type: planItem.question_type || 'technical',
+        follow_up_reason: reason
+      }
+    }
+    if (planItem.category === 'gap_probe' && planItem.gap_ref?.description) {
+      return {
+        question_text: `Regarding your background: ${planItem.gap_ref.probe_direction || planItem.gap_ref.description}. Could you explain how your experience transfers here?`,
+        question_type: 'situational',
+        follow_up_reason: reason
+      }
+    }
+    if (planItem.objective && !hasSimilarQuestionBeenAsked(planItem.objective, existingQuestions)) {
+      return {
+        question_text: `To evaluate ${planItem.objective.toLowerCase()}, could you walk me through your approach and key considerations?`,
+        question_type: planItem.question_type || 'technical',
+        follow_up_reason: reason
+      }
+    }
+  }
+
+  // 2. Inspect extracted tools from candidate analysis
+  const tools = analysis?.extractedTools || []
+  const unaskedTool = tools.find(t => t.name && !hasSimilarQuestionBeenAsked(t.name, existingQuestions))
+  if (unaskedTool) {
+    const text = unaskedTool.mentioned_in_resume
+      ? `Your resume references experience with ${unaskedTool.name}. Could you detail how you applied ${unaskedTool.name} in your projects and the outcomes achieved?`
+      : `This position utilizes ${unaskedTool.name}. How familiar are you with ${unaskedTool.name}, and how would you apply your technical knowledge to adopt it?`
+    return {
+      question_text: text,
+      question_type: 'technical',
+      follow_up_reason: reason
+    }
+  }
+
+  // 3. Inspect flagged gaps from alignment analysis
+  const flaggedGaps = analysis?.alignment?.flagged_gaps || []
+  const unaskedGap = flaggedGaps.find(g => g.description && !hasSimilarQuestionBeenAsked(g.description, existingQuestions))
+  if (unaskedGap) {
+    return {
+      question_text: `Looking at the role requirements versus your background: ${unaskedGap.probe_direction || unaskedGap.description}. How do you plan to address this in this role?`,
+      question_type: 'situational',
+      follow_up_reason: reason
+    }
+  }
+
+  // 4. Inspect candidate skills
+  const skills = analysis?.skills || []
+  const unaskedSkill = skills.find(s => s.skill && !hasSimilarQuestionBeenAsked(s.skill, existingQuestions))
+  if (unaskedSkill) {
+    return {
+      question_text: `How have you applied ${unaskedSkill.skill} in your past roles, and what key trade-offs or decisions did you handle?`,
+      question_type: 'technical',
+      follow_up_reason: reason
+    }
+  }
+
+  // 5. Inspect project mappings
+  const projects = analysis?.projectMappings || []
+  const unaskedProject = projects.find(p => p.resumeProject && !hasSimilarQuestionBeenAsked(p.resumeProject, existingQuestions))
+  if (unaskedProject) {
+    return {
+      question_text: `Can you elaborate on your contribution to ${unaskedProject.resumeProject} and how that experience transfers to ${unaskedProject.relatedJdRequirement}?`,
+      question_type: 'technical',
+      follow_up_reason: reason
+    }
+  }
+
+  // 6. Dynamic candidate role synthesis based on candidate summary or stage index
+  const stageIndex = Math.max(0, Math.min(totalQuestions, 9))
+  const stageTypes: QuestionResponse['question_type'][] = ['technical', 'technical', 'technical', 'technical', 'situational', 'technical', 'situational', 'technical', 'cultural', 'cultural']
+  const stageTopics = [
+    "foundational technical architecture and design principles",
+    "core technology implementation choices and trade-offs",
+    "technical decision-making under constraints",
+    "practical hands-on engineering challenges and solutions",
+    "debugging, root cause analysis, and system troubleshooting",
+    "mapping past technical achievements to core job requirements",
+    "adapting skills to new project domain requirements",
+    "deep technical execution on past key projects",
+    "collaboration style, feedback, and cross-functional communication",
+    "work style preferences, ownership, and engineering culture"
   ]
-  const fallback = orderedFallbacks.find(q => !hasSimilarQuestionBeenAsked(q.question_text, existingQuestions)) || FALLBACK_QUESTIONS[preferredIndex]
+
+  const topic = stageTopics[stageIndex] || "technical problem-solving and implementation"
+  const qType = stageTypes[stageIndex] || "technical"
+  const summaryContext = analysis?.summary ? `Based on your candidate profile: ` : ''
 
   return {
-    ...fallback,
+    question_text: `${summaryContext}Could you walk me through a specific experience from your background related to ${topic}, highlighting your personal role and key outcomes?`,
+    question_type: qType,
     follow_up_reason: reason
   }
 }
+
 
 async function callGemini(prompt: string, apiKey: string): Promise<string> {
   const model = import.meta.env.VITE_GEMINI_MODEL || 'gemini-1.5-flash'
@@ -335,7 +595,7 @@ async function callGroq(prompt: string, apiKey: string): Promise<string> {
 }
 
 async function callOpenAI(prompt: string, apiKey: string): Promise<string> {
-  const model = import.meta.env.VITE_OPENAI_MODEL || 'gpt-4o-mini'
+  const model = import.meta.env.VITE_OPENAI_MODEL || 'gpt-4.1-mini'
   const url = 'https://api.openai.com/v1/chat/completions'
   const response = await fetch(url, {
     method: 'POST',
@@ -896,6 +1156,7 @@ export async function generateInterviewerTurn(
   // The allowFollowUp check and count enforcement happen in InterviewContext before we arrive here.
   const shouldFollowUp =
     allowFollowUp &&
+    !targetQuestion && // wrapping a targetQuestion must NEVER trigger recursive follow-up
     lastAssessmentNote?.follow_up_prompted &&
     lastAssessmentNote?.follow_up_question &&
     followUpCount < maxFollowUps
@@ -906,7 +1167,7 @@ export async function generateInterviewerTurn(
     // We fall through to the main prompt below with targetQuestion set.
     const followUpTurn = await generateInterviewerTurn(
       resumeText, jdText, history, totalQuestions, analysis, authenticitySignals,
-      null,          // clear lastAssessmentNote so the main path doesn't re-enter this branch
+      lastAssessmentNote, // pass note through so acknowledgment context retains recruiter note
       followUpCount, // keep count for context
       pendingQuestions,
       false,         // allowFollowUp = false so recursive call goes to main path
@@ -929,16 +1190,30 @@ export async function generateInterviewerTurn(
 
   let focusInstruction: string
   if (planItem) {
-    // Build a rich, tool-grounded focus instruction from the plan item's target_tool and verification_mode
-    const tool = planItem.target_tool || 'the required skill'
-    const mode = planItem.verification_mode || 'baseline_check'
-    const matchingToolObj = extractedTools.find(t => t.name.toLowerCase() === tool.toLowerCase())
-    const resumeContext = matchingToolObj?.resume_context || ''
-
-    if (mode === 'verify_claim') {
-      focusInstruction = `VERIFICATION MODE: verify_claim — the candidate claims experience with "${tool}"${resumeContext ? ` (from their resume: "${resumeContext}")` : ' (mentioned in resume)'}. Ask them to explain THEIR OWN specific, practical usage of "${tool}" — actual decisions made, projects it was used in, how they configured or applied it. Do NOT ask for textbook definitions or generic descriptions. The question MUST explicitly name "${tool}".\nObjective: ${planItem.objective}\nDifficulty limit: ${planItem.difficulty}`
+    if (planItem.category === 'gap_probe') {
+      const gap = planItem.gap_ref
+      focusInstruction = `CATEGORY: gap_probe — Probe a potential gap between candidate background and role requirements: "${gap?.description || planItem.objective}".
+Probe direction: "${gap?.probe_direction || 'Ask candidate to explain how their background transfers to this requirement'}".
+TONE MANDATE: Be warm, curious, and professional. Do NOT sound accusatory, skeptical, or dismissive. Frame the question as a genuine recruiter interest in understanding how their experience transfers or how they plan to bridge this gap.`
+    } else if (planItem.category === 'problem_solving') {
+      focusInstruction = `CATEGORY: problem_solving — Scenario/case-based reasoning question.
+Objective: ${planItem.objective || 'Test practical problem solving, trade-offs, and technical reasoning'}.
+Ask a practical scenario or case-based question that tests how the candidate thinks, analyzes trade-offs, handles ambiguity, or approaches real-world technical/product decisions. Do NOT test recall of a specific tool or library. Do NOT ask textbook definitions.`
+    } else if (planItem.category === 'cultural') {
+      focusInstruction = `CATEGORY: cultural — Assess work style, team collaboration, handling feedback, or adaptability.
+Objective: ${planItem.objective || 'Evaluate teamwork, communication, and work style fit.'}`
     } else {
-      focusInstruction = `VERIFICATION MODE: baseline_check — "${tool}" is required by the JD but is not clearly shown on the candidate's resume. Ask a simple, baseline awareness question about "${tool}" (e.g. what it's used for, what problem it solves, when a developer would reach for it). Keep it strictly foundational — no advanced internals, no performance-at-scale, no edge cases. The question MUST explicitly name "${tool}".\nObjective: ${planItem.objective}\nDifficulty limit: ${planItem.difficulty}`
+      // technical_jd or technical_resume: tool-grounded verification
+      const tool = planItem.target_tool || 'the required skill'
+      const mode = planItem.verification_mode || 'baseline_check'
+      const matchingToolObj = extractedTools.find(t => t.name.toLowerCase() === tool.toLowerCase())
+      const resumeContext = matchingToolObj?.resume_context || ''
+
+      if (mode === 'verify_claim') {
+        focusInstruction = `VERIFICATION MODE: verify_claim — the candidate claims experience with "${tool}"${resumeContext ? ` (from their resume: "${resumeContext}")` : ' (mentioned in resume)'}. Ask them to explain THEIR OWN specific, practical usage of "${tool}" — actual decisions made, projects it was used in, how they configured or applied it. Do NOT ask for textbook definitions or generic descriptions. The question MUST explicitly name "${tool}".\nObjective: ${planItem.objective}\nDifficulty limit: ${planItem.difficulty}`
+      } else {
+        focusInstruction = `VERIFICATION MODE: baseline_check — "${tool}" is required by the JD but is not clearly shown on the candidate's resume. Ask a simple, baseline awareness question about "${tool}" (e.g. what it's used for, what problem it solves, when a developer would reach for it). Keep it strictly foundational — no advanced internals, no performance-at-scale, no edge cases. The question MUST explicitly name "${tool}".\nObjective: ${planItem.objective}\nDifficulty limit: ${planItem.difficulty}`
+      }
     }
   } else {
     focusInstruction = buildFocusInstruction(stageFocus, interviewStage.instruction, extractedTools)
@@ -958,10 +1233,31 @@ export async function generateInterviewerTurn(
     .map((h, i) => `${i + 1}. ${h.question}`)
     .join('\n') || 'None yet.'
 
-  const lastAnswer = history[history.length - 1]?.answer || ''
+  const lastItem = history[history.length - 1]
+  const lastAnswer = lastItem?.answer || ''
 
-  const lastAnswerContext = history.length > 0
-    ? `\nThe candidate's most recent answer:\n"${lastAnswer}"`
+  // Validate that lastAssessmentNote strictly corresponds to lastItem of the CURRENT session
+  const isNoteMatchingLastItem = Boolean(
+    lastAssessmentNote &&
+    lastAssessmentNote.question_id &&
+    lastItem &&
+    lastItem.id &&
+    lastAssessmentNote.question_id === lastItem.id
+  )
+  const validNote = isNoteMatchingLastItem ? lastAssessmentNote?.note : undefined
+
+  console.info('[generateInterviewerTurn] Prompt acknowledgment context:', {
+    lastQuestionText: lastItem?.question ? lastItem.question.slice(0, 60) : 'None',
+    lastAnswerText: lastAnswer ? lastAnswer.slice(0, 60) : 'None',
+    hasNote: Boolean(validNote),
+    noteText: validNote ? validNote.slice(0, 60) : 'N/A',
+    targetQuestion: targetQuestion ? targetQuestion.slice(0, 60) : 'Dynamic'
+  })
+
+  const lastAnswerContext = lastItem
+    ? `\nMOST RECENT CANDIDATE ANSWER TO ACKNOWLEDGE (MANDATORY):
+- Question Asked by Interviewer: "${lastItem.question}"
+- Candidate's Answer: "${lastAnswer || '(no response)'}"${validNote ? `\n- Recruiter Assessment Note: "${validNote}"` : ''}`
     : ''
 
   const pendingContext = pendingQuestions.length > 0
@@ -1000,7 +1296,7 @@ Candidate Resume:
 ${truncate(resumeText || 'Not provided', 3000)}
 """
 
-Interview History (most recent first):
+Interview History (chronological order, oldest to newest):
 ${history.slice(-MAX_HISTORY_TURNS).map((h, i) => `
 Step ${i + 1} (Type: ${h.type}):
 AI: ${h.question}
@@ -1034,8 +1330,8 @@ Current stage:
 - Required type: ${interviewStage.questionType}
 
 INSTRUCTIONS:
-1. ACKNOWLEDGE the candidate's last answer naturally — reference a specific detail they shared. Do NOT use generic acknowledgments like "Great answer" or "Thanks".
-2. Ask the REQUIRED NEXT QUESTION if one is provided in the context above. If it is not provided, use one of the pre-generated questions or ask a new one based on the stage focus.
+1. ACKNOWLEDGE the candidate's MOST RECENT answer (to "${lastItem?.question || 'their last question'}") naturally — reference a specific detail they shared in that answer. Do NOT reference earlier questions or use generic acknowledgments like "Great answer" or "Thanks".
+${lastItem?.type === 'follow_up' ? '2. POST-FOLLOW-UP RULE: The candidate just answered your follow-up probe. Briefly acknowledge their follow-up answer in one sentence, then smoothly transition directly to the next question. Do NOT ask another follow-up question.\n3.' : '2.'} Ask the REQUIRED NEXT QUESTION if one is provided in the context above. If it is not provided, use one of the pre-generated questions or ask a new one based on the stage focus.
 3. Make sure the transition is warm and smooth. Sound like a human recruiter, Alex, conducting a natural live conversation.
 4. Keep it tight — one clear question per turn, no stacked sub-questions.
 5. If a follow-up is needed, address the specific missing detail.
@@ -1065,7 +1361,7 @@ Return ONLY this JSON:
       ]
 
       if (hasSimilarQuestionBeenAsked(questionText, allSessionQuestions)) {
-        const fallback = getFallbackQuestion(totalQuestions, allSessionQuestions, "LLM returned a repeated question")
+        const fallback = getDynamicCandidateQuestion(totalQuestions, allSessionQuestions, analysis, planItem, "LLM returned a repeated question")
         return {
           interviewer_text: fallback.question_text,
           question_text: fallback.question_text,
@@ -1084,7 +1380,7 @@ Return ONLY this JSON:
       should_continue: parsed.should_continue !== false
     }
   } catch (err) {
-    console.error('[generateInterviewerTurn] Failed, using fallback:', err)
+    console.error('[generateInterviewerTurn] Failed, using dynamic candidate question:', err)
     // When wrapping a targetQuestion, use it directly so TTS speaks the correct question
     if (targetQuestion) {
       return {
@@ -1099,7 +1395,7 @@ Return ONLY this JSON:
       ...history.map(h => h.question),
       ...pendingQuestions
     ]
-    const fallback = getFallbackQuestion(totalQuestions, allSessionQuestions, "LLM unavailable or returned invalid JSON")
+    const fallback = getDynamicCandidateQuestion(totalQuestions, allSessionQuestions, analysis, planItem, "LLM unavailable or returned invalid JSON")
     return {
       interviewer_text: fallback.question_text,
       question_text: fallback.question_text,
@@ -1352,17 +1648,155 @@ Instructions:
     const questionText = parsed.question_text || "Can you tell me more about your background?"
     const existingQuestions = history.map(h => h.question)
     if (hasSimilarQuestionBeenAsked(questionText, existingQuestions)) {
-      return getFallbackQuestion(totalQuestions, existingQuestions, "LLM returned a repeated or near-duplicate question, so a fallback question was selected.")
+      return getDynamicCandidateQuestion(totalQuestions, existingQuestions, analysis, null, "LLM returned a repeated or near-duplicate question, so a dynamic candidate question was generated.")
     }
 
     return {
       question_text: questionText,
       question_type: parsed.question_type || interviewStage.questionType,
-      follow_up_reason: parsed.follow_up_reason || "Fallback due to missing keys"
+      follow_up_reason: parsed.follow_up_reason || "Generated via AI candidate analysis"
     }
   } catch (err) {
-    console.error("Failed to generate question via LLM, using fallback:", err)
+    console.error("Failed to generate question via LLM, using dynamic candidate question:", err)
     const existingQuestions = history.map(h => h.question)
-    return getFallbackQuestion(totalQuestions, existingQuestions, "LLM unavailable or returned invalid JSON, so a fallback question was selected.")
+    return getDynamicCandidateQuestion(totalQuestions, existingQuestions, analysis, null, "LLM unavailable or returned invalid JSON, so a dynamic candidate question was generated.")
+  }
+}
+
+export interface AnswerRecordForScoring {
+  question: string
+  answer: string
+  type?: string
+}
+
+export async function generateCandidateScorecard(
+  sessionId: string,
+  resumeText: string,
+  jdText: string,
+  answers: AnswerRecordForScoring[],
+  proctoringCount = 0
+): Promise<import('@/types').Scorecard> {
+  const isRefusal = (ans: string) => {
+    const clean = (ans || '').toLowerCase().trim()
+    return (
+      clean.length === 0 ||
+      clean === 'no answer recorded' ||
+      clean.includes("i don't know") ||
+      clean.includes("dont know") ||
+      clean.includes('do not know') ||
+      clean.includes('read upon this') ||
+      clean.includes('read on this') ||
+      clean.includes('have to read') ||
+      clean.includes('not sure') ||
+      clean.includes('no idea') ||
+      clean === "i don't know" ||
+      clean === "don't know"
+    )
+  }
+
+  const refusalCount = answers.filter(a => isRefusal(a.answer)).length
+  const totalAnswers = Math.max(1, answers.length)
+  const refusalRate = refusalCount / totalAnswers
+
+  const prompt = `
+You are a senior technical recruiter evaluating a candidate's live interview performance against the job description and resume.
+
+STRICT SCORING RUBRIC & MANDATORY PENALTIES:
+1. NON-ANSWER & REFUSAL PENALTY (CRITICAL):
+   - Answers like "I don't know", "I have to read upon this", "not sure", or 1-3 word non-responses MUST be scored ZERO (0) for technical & problem solving depth.
+   - Do NOT give partial credit or benefit of the doubt for "honesty". Candidate performance in the live interview TRUMPS resume claims.
+2. REFUSAL SCORE CAPS:
+   - Total Answers: ${totalAnswers}
+   - Refusals / Non-answers: ${refusalCount} (Refusal Rate: ${Math.round(refusalRate * 100)}%)
+   - If refusal rate >= 30%: technical_score MUST be 0-25, overall_score MUST be 0-25, and recommendation MUST BE strictly 'no_go'.
+   - If refusal rate >= 50%: technical_score MUST be 0-15, overall_score MUST be 0-15, and recommendation MUST BE strictly 'no_go'.
+3. RESUME VS REALITY:
+   - If candidate claims a tool on resume but answers "I don't know" when asked about it in the interview, mark claim status as 'contradicted' with evidence.
+
+Job Description:
+"""
+${truncate(jdText || 'Not provided', 3000)}
+"""
+
+Candidate Resume:
+"""
+${truncate(resumeText || 'Not provided', 3000)}
+"""
+
+Interview Q&A Transcript:
+${JSON.stringify(answers, null, 2)}
+
+Return ONLY valid JSON in this exact format:
+{
+  "technical_score": number,
+  "communication_score": number,
+  "problem_solving_score": number,
+  "cultural_fit_score": number,
+  "overall_score": number,
+  "authenticity_score": number,
+  "strengths": string[],
+  "weaknesses": string[],
+  "red_flag_count": number,
+  "red_flags": string[],
+  "recommendation": "strong_hire" | "hire" | "consider" | "no_go",
+  "ai_rationale": "2-3 sentence overview",
+  "detailed_rationale": "detailed explanation of fit and authenticity findings",
+  "resume_vs_reality": [
+    { "claim": string, "status": "verified" | "suspicious" | "unverifiable" | "contradicted", "evidence": string }
+  ]
+}`
+
+  let content: any = {}
+  try {
+    const raw = await generateCompletion(prompt)
+    const cleaned = extractJSON(raw)
+    content = JSON.parse(cleaned)
+  } catch (err) {
+    console.warn('[generateCandidateScorecard] LLM evaluation fallback triggered:', err)
+  }
+
+  let technical_score = typeof content.technical_score === 'number' ? content.technical_score : (refusalRate >= 0.5 ? 10 : 50)
+  let communication_score = typeof content.communication_score === 'number' ? content.communication_score : (refusalRate >= 0.5 ? 20 : 50)
+  let problem_solving_score = typeof content.problem_solving_score === 'number' ? content.problem_solving_score : (refusalRate >= 0.5 ? 10 : 50)
+  let cultural_fit_score = typeof content.cultural_fit_score === 'number' ? content.cultural_fit_score : (refusalRate >= 0.5 ? 25 : 50)
+  let authenticity_score = typeof content.authenticity_score === 'number' ? content.authenticity_score : (refusalRate >= 0.5 ? 15 : 60)
+  let overall_score = typeof content.overall_score === 'number' ? content.overall_score : Math.round((technical_score * 0.4) + (problem_solving_score * 0.3) + (communication_score * 0.15) + (cultural_fit_score * 0.15))
+  let recommendation = (content.recommendation as import('@/types').Recommendation) || 'consider'
+
+  // Deterministic guardrails: strictly clamp scores if candidate refused 30%+ of questions
+  if (refusalRate >= 0.5) {
+    technical_score = Math.min(technical_score, 15)
+    problem_solving_score = Math.min(problem_solving_score, 15)
+    communication_score = Math.min(communication_score, 35)
+    overall_score = Math.min(overall_score, 15)
+    recommendation = 'no_go'
+  } else if (refusalRate >= 0.3) {
+    technical_score = Math.min(technical_score, 30)
+    problem_solving_score = Math.min(problem_solving_score, 30)
+    overall_score = Math.min(overall_score, 30)
+    recommendation = 'no_go'
+  }
+
+  return {
+    id: crypto.randomUUID(),
+    session_id: sessionId,
+    technical_score,
+    communication_score,
+    problem_solving_score,
+    cultural_fit_score,
+    overall_score,
+    authenticity_score,
+    red_flag_count: (content.red_flags?.length || 0) + (refusalRate >= 0.3 ? 1 : 0),
+    red_flags: Array.isArray(content.red_flags) ? content.red_flags : (refusalRate >= 0.3 ? ['Candidate answered "I don\'t know" to most technical probes'] : []),
+    resume_vs_reality: Array.isArray(content.resume_vs_reality) ? content.resume_vs_reality : [],
+    strengths: Array.isArray(content.strengths) ? content.strengths : [],
+    weaknesses: Array.isArray(content.weaknesses) ? content.weaknesses : (refusalRate >= 0.3 ? ['Failed to demonstrate technical familiarity on interview questions'] : []),
+    recommendation,
+    ai_rationale: content.ai_rationale || (refusalRate >= 0.3 ? 'Candidate gave non-answers ("I don\'t know") to most technical questions during the live interview.' : 'Interview evaluation completed.'),
+    detailed_rationale: content.detailed_rationale || '',
+    scoring_model_version: 'groq-llama-3.3-70b-v2-strict',
+    evaluated_at: new Date().toISOString(),
+    reviewed_by_human: false,
+    created_at: new Date().toISOString()
   }
 }

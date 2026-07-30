@@ -93,6 +93,8 @@ export function useMediaRecorder() {
       recordingIdRef.current = recordingId
       setState(prev => ({ ...prev, recordingId }))
 
+      const cleanMimeType = mimeType.split(';')[0] || 'video/webm'
+
       const { error: insertError } = await supabasePublic
         .from('recordings_ai_interview')
         .insert({
@@ -101,17 +103,11 @@ export function useMediaRecorder() {
           stream_type: 'camera_video',
           status: 'processing',
           storage_path: storagePathRef.current,
-          mime_type: mimeType
+          mime_type: cleanMimeType
         })
 
       if (insertError) {
-        recorder.stop()
-        mediaRecorderRef.current = null
-        streamsRef.current.forEach(stopStream)
-        streamsRef.current = []
-        console.warn('Failed to create recording record:', insertError.message)
-        setState(prev => ({ ...prev, error: `Recording DB insert failed: ${insertError.message}`, status: 'idle' }))
-        return
+        console.warn('Initial recording DB insert warning (will upsert on stop):', insertError.message)
       }
 
       durationIntervalRef.current = setInterval(() => {
@@ -144,14 +140,17 @@ export function useMediaRecorder() {
           if (!recordingId) return
           await supabasePublic
             .from('recordings_ai_interview')
-            .update({
+            .upsert({
+              id: recordingId,
+              session_id: sessionIdRef.current,
+              stream_type: 'camera_video',
               status: 'failed',
+              storage_path: storagePath,
               duration_secs: Math.floor((Date.now() - startTimeRef.current) / 1000),
               file_size_bytes: fullBlob.size,
               mime_type: storageContentType,
               transcoded_paths: { error: message }
             })
-            .eq('id', recordingId)
         }
 
         try {
@@ -178,14 +177,16 @@ export function useMediaRecorder() {
           if (recordingId) {
             const { error: updateError } = await supabasePublic
               .from('recordings_ai_interview')
-              .update({
+              .upsert({
+                id: recordingId,
+                session_id: sessionIdRef.current,
+                stream_type: 'camera_video',
                 status: 'ready',
                 storage_path: storagePath,
                 duration_secs: Math.floor((Date.now() - startTimeRef.current) / 1000),
                 file_size_bytes: fullBlob.size,
                 mime_type: storageContentType
               })
-              .eq('id', recordingId)
 
             if (updateError) {
               console.warn('Recording update failed:', updateError)

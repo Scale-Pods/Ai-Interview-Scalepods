@@ -183,18 +183,41 @@ export interface JdTool {
   resume_context: string | null;
 }
 
+export interface FlaggedGap {
+  gap_type: 'domain_mismatch' | 'experience_mismatch' | 'stack_mismatch' | 'seniority_mismatch';
+  description: string;
+  probe_direction: string;
+}
+
+export interface ResumeJdAlignment {
+  domain_alignment: 'aligned' | 'partial' | 'mismatched';
+  domain_reasoning: string;
+  experience_gap: {
+    jd_required_years: number | null;
+    candidate_years: number | null;
+    status: 'underqualified' | 'overqualified' | 'aligned' | 'unclear';
+    reasoning: string;
+  };
+  flagged_gaps: FlaggedGap[];
+}
+
+export type PlanItemCategory = 'technical_jd' | 'technical_resume' | 'gap_probe' | 'problem_solving' | 'cultural';
+
 export interface InterviewPlanItem {
   id: string;
+  category: PlanItemCategory;
   competency_ids: string[];
   objective: string;
   question_type: 'technical' | 'behavioral' | 'situational' | 'cultural';
   /** Capped at foundation/applied — this is a screening round, not a senior systems design interview. */
   difficulty: 'foundation' | 'applied';
-  /** The specific named tool (e.g. "React", "PostgreSQL") this plan item tests. */
+  /** The specific named tool (e.g. "React", "PostgreSQL") this plan item tests (for technical items). */
   target_tool?: string;
   /** verify_claim: candidate listed this tool on their resume — confirm real usage.
    *  baseline_check: JD-only tool — confirm basic awareness/understanding. */
   verification_mode?: 'verify_claim' | 'baseline_check';
+  /** Specific flagged gap reference for gap_probe items. */
+  gap_ref?: FlaggedGap;
 }
 
 export interface InterviewBlueprint {

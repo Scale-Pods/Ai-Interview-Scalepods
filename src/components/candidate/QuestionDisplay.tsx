@@ -1,4 +1,4 @@
-import { Brain, MessageSquare, Users, Lightbulb } from 'lucide-react'
+import { Brain, MessageSquare, Users, Lightbulb, Volume2 } from 'lucide-react'
 import type { InterviewQuestion } from '@/types'
 
 interface QuestionDisplayProps {
@@ -7,6 +7,7 @@ interface QuestionDisplayProps {
   totalQuestions: number
   onSpeakQuestion?: (question: InterviewQuestion) => void
   interviewerLeadIn?: string
+  interviewerUtterance?: string
 }
 
 const TYPE_CONFIG = {
@@ -16,7 +17,42 @@ const TYPE_CONFIG = {
   cultural: { icon: MessageSquare, label: 'Cultural Fit', color: 'var(--orange)', bg: 'color-mix(in srgb, var(--orange) 10%, transparent)', border: 'color-mix(in srgb, var(--orange) 20%, transparent)' },
 }
 
-export function QuestionDisplay({ question, questionNumber, totalQuestions, interviewerLeadIn }: QuestionDisplayProps) {
+export function extractLeadIn(fullUtterance?: string, questionText?: string): string | undefined {
+  if (!fullUtterance || !questionText) return undefined
+  const full = fullUtterance.trim()
+  const qText = questionText.trim()
+
+  if (!full || !qText || full === qText) return undefined
+
+  // 1. Exact substring match: question starts at index > 0
+  const idx = full.indexOf(qText)
+  if (idx > 0) {
+    const lead = full.slice(0, idx).trim()
+    return lead || undefined
+  }
+
+  // 2. Case-insensitive substring match
+  const lowerFull = full.toLowerCase()
+  const lowerQ = qText.toLowerCase()
+  const lowerIdx = lowerFull.indexOf(lowerQ)
+  if (lowerIdx > 0) {
+    const lead = full.slice(0, lowerIdx).trim()
+    return lead || undefined
+  }
+
+  // 3. Sentence boundary extraction: if full utterance has multiple sentences and ends with/resembles question
+  const sentenceMatches = full.match(/[^.!?]+[.!?]+/g)
+  if (sentenceMatches && sentenceMatches.length > 1) {
+    const leadSentences = sentenceMatches.slice(0, -1).join(' ').trim()
+    if (leadSentences && leadSentences !== full && leadSentences !== qText) {
+      return leadSentences
+    }
+  }
+
+  return undefined
+}
+
+export function QuestionDisplay({ question, questionNumber, totalQuestions, interviewerLeadIn, interviewerUtterance }: QuestionDisplayProps) {
   if (!question) {
     return (
       <div className="text-center p-12 animate-fade-in" style={{ color: 'var(--label-tertiary)' }}>
@@ -29,6 +65,8 @@ export function QuestionDisplay({ question, questionNumber, totalQuestions, inte
   const config = TYPE_CONFIG[question.question_type] || TYPE_CONFIG.technical
   const Icon = config.icon
   const displayQuestionNumber = Math.min(questionNumber + 1, totalQuestions)
+
+  const leadText = interviewerLeadIn || extractLeadIn(interviewerUtterance, question.question_text)
 
   return (
     <div className="w-full animate-fade-in">
@@ -55,13 +93,22 @@ export function QuestionDisplay({ question, questionNumber, totalQuestions, inte
         </div>
       </div>
 
-      {interviewerLeadIn && (
-        <div className="mb-3 px-4 py-2.5 rounded-xl text-sm" style={{
-          background: 'color-mix(in srgb, var(--blue) 6%, transparent)',
-          border: '1px solid color-mix(in srgb, var(--blue) 15%, transparent)',
-          color: 'var(--label-secondary)'
+      {leadText && (
+        <div className="mb-3 p-3.5 rounded-2xl animate-fade-in" style={{
+          background: 'color-mix(in srgb, var(--blue) 8%, transparent)',
+          border: '1px solid color-mix(in srgb, var(--blue) 20%, transparent)',
         }}>
-          <span className="italic">&ldquo;{interviewerLeadIn}&rdquo;</span>
+          <div className="flex items-center gap-2 mb-1">
+            <div className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-white shrink-0" style={{ background: 'var(--blue)' }}>
+              A
+            </div>
+            <span className="text-xs font-semibold flex items-center gap-1" style={{ color: 'var(--blue)' }}>
+              <Volume2 size={12} /> Alex (AI Recruiter) Spoken Acknowledgment
+            </span>
+          </div>
+          <p className="text-sm leading-relaxed italic pl-7" style={{ color: 'var(--label-primary)' }}>
+            &ldquo;{leadText}&rdquo;
+          </p>
         </div>
       )}
 
@@ -72,7 +119,7 @@ export function QuestionDisplay({ question, questionNumber, totalQuestions, inte
       </div>
 
       <p className="text-xs text-center mt-3" style={{ color: 'var(--label-tertiary)' }}>
-        {interviewerLeadIn ? "Alex is speaking — listen to the full introduction, then respond." : "Listen to the AI's question, then speak your response."}
+        {leadText ? "Alex is speaking — listen to the full spoken transition, then speak your response." : "Listen to the AI's question, then speak your response."}
       </p>
     </div>
   )

@@ -5,7 +5,7 @@ import { fetchScorecard } from '@/api/scorecards'
 import { supabasePublic } from '@/api/client'
 import { fetchInterviewBlueprint, saveInterviewBlueprint } from '@/api/interviewBlueprints'
 import { useMediaRecorder } from '@/hooks/useMediaRecorder'
-import { analyzeCandidateFit, generateInterviewerTurn, generateNextInterviewQuestion, analyzeAnswerInRealtime, generateInterviewBlueprint, generateTargetedFollowUp, extractJdToolsAndTech } from '@/utils/llm'
+import { analyzeCandidateFit, generateInterviewerTurn, generateNextInterviewQuestion, analyzeAnswerInRealtime, generateInterviewBlueprint, generateTargetedFollowUp, extractJdToolsAndTech, analyzeResumeJdAlignment } from '@/utils/llm'
 import { selectNextPlanItem, shouldAskFollowUp } from '@/utils/interviewOrchestrator'
 import type { CandidateAnalysis } from '@/utils/llm'
 
@@ -88,6 +88,7 @@ export function InterviewProvider({ children }: { children: React.ReactNode }) {
   const loadSession = useCallback(async (id: string) => {
     setLoading(true)
     setLoadError('')
+    candidateAnalysisRef.current = null
     setLiveAssessmentNotes([])
     liveAssessmentNotesRef.current = []
     setAuthenticitySignals([])
@@ -271,7 +272,7 @@ export function InterviewProvider({ children }: { children: React.ReactNode }) {
       const answerByQuestion = new Map((priorAnswers || []).map(answer => [answer.question_id, answer.answer_text || '']))
       const historyMap = currentQuestions
         .filter(q => q.order_index < currentQuestion.order_index)
-        .map(q => ({ question: q.question_text, answer: answerByQuestion.get(q.id) || '', type: q.question_type }))
+        .map(q => ({ question: q.question_text, answer: answerByQuestion.get(q.id) || '', type: q.source === 'llm_ts_followup' ? 'follow_up' : q.question_type }))
 
       const note = await analyzeAnswerInRealtime(
         currentQuestion.question_text, answerText, resumeText, jdText,
@@ -386,9 +387,10 @@ export function InterviewProvider({ children }: { children: React.ReactNode }) {
         ...(answersResult.data || []).map(a => a.question_id)
       ])
       const history = latestQuestions.filter(q => answeredIds.has(q.id)).map(q => ({
+        id: q.id,
         question: q.question_text,
         answer: answersMap.get(q.id) || '',
-        type: q.question_type
+        type: q.source === 'llm_ts_followup' ? 'follow_up' : q.question_type
       }))
 
       // Count only answered job-related questions — excludes intro questions (dynamic or
@@ -402,12 +404,13 @@ export function InterviewProvider({ children }: { children: React.ReactNode }) {
       ).length
 
       if (!candidateAnalysisRef.current && (resumeText || jdText)) {
-        console.info('[InterviewContext] Running candidate fit analysis + JD tool extraction in parallel.')
-        const [analysis, extractedTools] = await Promise.all([
+        console.info('[InterviewContext] Running candidate fit analysis + JD tool extraction + alignment analysis in parallel.')
+        const [analysis, extractedTools, alignment] = await Promise.all([
           analyzeCandidateFit(resumeText, jdText),
-          extractJdToolsAndTech(resumeText, jdText)
+          extractJdToolsAndTech(resumeText, jdText),
+          analyzeResumeJdAlignment(resumeText, jdText)
         ])
-        candidateAnalysisRef.current = { ...analysis, extractedTools }
+        candidateAnalysisRef.current = { ...analysis, extractedTools, alignment }
       }
 
       let activeBlueprint = blueprint
@@ -437,10 +440,57 @@ export function InterviewProvider({ children }: { children: React.ReactNode }) {
       const nextPendingQuestion = pendingQuestionRows[0]
       const pendingQuestions = pendingQuestionRows.map(question => question.question_text)
 
-      // Early return: if we have reached the maximum number of primary questions
-      // AND there are no more pending pre-generated questions to ask,
-      // transition immediately to the closing statement.
-      if (jobQuestionsAsked >= maxPrimaryQuestions && !nextPendingQuestion) {
+      // 1. Identify the last answered question from DB / live answered state
+      const answeredQuestions = latestQuestions.filter(q => answeredIds.has(q.id))
+      const lastAnsweredQuestion = answeredQuestions[answeredQuestions.length - 1] || null
+      const lastAnswerText = lastAnsweredQuestion ? (answersMap.get(lastAnsweredQuestion.id) || '') : ''
+
+      // 2. Resolve the matching LiveAssessmentNote for the last answered question.
+      // Priority: (a) in-memory ref if matching, (b) liveAssessmentNotesRef array, (c) fresh Supabase DB data
+      let lastNote: LiveAssessmentNote | null = null
+      if (lastAnsweredQuestion) {
+        if (lastAssessmentNoteRef.current?.question_id === lastAnsweredQuestion.id) {
+          lastNote = lastAssessmentNoteRef.current
+        } else {
+          lastNote = liveAssessmentNotesRef.current.find(n => n.question_id === lastAnsweredQuestion.id) || null
+        }
+        if (!lastNote && answersResult.data) {
+          const dbRow = answersResult.data.find(a => a.question_id === lastAnsweredQuestion.id)
+          if (dbRow?.ai_live_note) {
+            lastNote = dbRow.ai_live_note as LiveAssessmentNote
+          } else if (dbRow?.ai_assessment) {
+            lastNote = dbRow.ai_assessment as LiveAssessmentNote
+          }
+        }
+      }
+
+      // Safeguard & assertions: Log and verify context alignment
+      console.info('[InterviewContext] Resolved turn acknowledgment context:', {
+        lastQuestionId: lastAnsweredQuestion?.id || null,
+        lastQuestionText: lastAnsweredQuestion?.question_text.slice(0, 60) || 'None',
+        lastAnswerText: lastAnswerText.slice(0, 60),
+        noteQuestionId: lastNote?.question_id || null,
+        isAligned: Boolean(lastAnsweredQuestion && lastNote?.question_id === lastAnsweredQuestion.id)
+      })
+
+      if (lastNote && lastAnsweredQuestion && lastNote.question_id !== lastAnsweredQuestion.id) {
+        console.warn('[InterviewContext] Mismatch detected: lastNote belongs to question', lastNote.question_id, 'but expected', lastAnsweredQuestion.id, '— clearing stale note.')
+        lastNote = null
+      }
+
+      const lastQuestion = lastAnsweredQuestion
+      const lastAnswerWasFollowUp = lastQuestion?.source === 'llm_ts_followup'
+      const followUpCount = getFollowUpCount(latestQuestions, lastNote)
+      const nextPlanItem = selectNextPlanItem(activeBlueprint, latestQuestions, liveAssessmentNotesRef.current)
+
+      // Compute constraints for follow-up.
+      // Follow-ups are only allowed for technical questions, max 1 follow-up per parent technical question.
+      const isTechnicalQuestion = lastQuestion?.question_type === 'technical'
+      const maxFollowUps = (isTechnicalQuestion && !lastAnswerWasFollowUp) ? 1 : 0
+      const allowPolicyFollowUp = shouldAskFollowUp(lastNote, followUpCount, maxFollowUps)
+
+      // Closing check: ONLY trigger closing if no follow-up is pending AND max primary questions reached
+      if (!allowPolicyFollowUp && jobQuestionsAsked >= maxPrimaryQuestions && !nextPendingQuestion) {
         setCurrentTurn({
           interviewer_text: "That brings us to the end of the interview. Thank you so much for your time and for sharing your experience. Your responses have been successfully recorded. It is now safe to exit the interview and close this tab.",
           question_text: '',
@@ -450,20 +500,6 @@ export function InterviewProvider({ children }: { children: React.ReactNode }) {
         })
         return
       }
-
-      const lastNote = lastAssessmentNoteRef.current
-      const lastQuestion = latestQuestions.find(question => question.id === lastNote?.question_id)
-      const lastAnswerWasFollowUp = lastQuestion?.source === 'llm_ts_followup'
-      const followUpCount = getFollowUpCount(latestQuestions, lastNote)
-      const nextPlanItem = selectNextPlanItem(activeBlueprint, latestQuestions, liveAssessmentNotesRef.current)
-
-      // Compute constraints for follow-up.
-      // Belt-and-suspenders: always 0 for non-technical questions — this is enforced
-      // in submitAnswer before the note is created, but we re-check here so the
-      // orchestrator is correct even if a stale note somehow has follow_up_prompted=true.
-      const isTechnicalQuestion = lastQuestion?.question_type === 'technical'
-      const maxFollowUps = (isTechnicalQuestion && !lastAnswerWasFollowUp) ? 1 : 0
-      const allowPolicyFollowUp = shouldAskFollowUp(lastNote, followUpCount, maxFollowUps)
 
       // If a pre-generated question is waiting AND no follow-up is required,
       // generate a natural conversational acknowledgment via LLM but do NOT
@@ -797,12 +833,13 @@ export function InterviewProvider({ children }: { children: React.ReactNode }) {
       const jobQuestionsAsked = Math.max(0, latestQuestions.length - 1)
 
       if (!candidateAnalysisRef.current) {
-        console.info('[InterviewContext] Late-init: Running candidate fit analysis + JD tool extraction in parallel.')
-        const [analysis, extractedTools] = await Promise.all([
+        console.info('[InterviewContext] Late-init: Running candidate fit analysis + JD tool extraction + alignment analysis in parallel.')
+        const [analysis, extractedTools, alignment] = await Promise.all([
           analyzeCandidateFit(resumeText, jdText),
-          extractJdToolsAndTech(resumeText, jdText)
+          extractJdToolsAndTech(resumeText, jdText),
+          analyzeResumeJdAlignment(resumeText, jdText)
         ])
-        candidateAnalysisRef.current = { ...analysis, extractedTools }
+        candidateAnalysisRef.current = { ...analysis, extractedTools, alignment }
       }
 
       // Check if the last answer triggered a follow-up probe
@@ -942,7 +979,15 @@ export function InterviewProvider({ children }: { children: React.ReactNode }) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ session_id: session.id })
-    }).catch(err => console.error('Scoring webhook failed (verify n8n is running and VITE_WEBHOOK_SCORING_PIPELINE is correct):', err))
+    }).catch(err => console.error('Scoring webhook failed:', err))
+
+    import('@/api/scorecards').then(({ scoreInterviewDirectly, fetchScorecard }) => {
+      scoreInterviewDirectly(session.id).then(() => {
+        fetchScorecard(session.id).then(sc => {
+          if (sc) setScorecard(sc)
+        })
+      })
+    }).catch(err => console.error('Direct scoring pipeline failed:', err))
   }, [session, setMediaStreams])
 
   useEffect(() => {
