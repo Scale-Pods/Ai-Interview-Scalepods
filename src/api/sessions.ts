@@ -97,7 +97,38 @@ export async function updateSessionStatus(id: string, status: InterviewSession['
     .from('interview_sessions_ai_interview')
     .update({ status, updated_at: new Date().toISOString() })
     .eq('id', id)
-  if (error) throw error
+  if (error) {
+    const { error: pubError } = await supabasePublic
+      .from('interview_sessions_ai_interview')
+      .update({ status, updated_at: new Date().toISOString() })
+      .eq('id', id)
+    if (pubError) throw error
+  }
+}
+
+export async function extendSessionExpiry(id: string, days = 7): Promise<void> {
+  const { data: session } = await supabasePublic
+    .from('interview_sessions_ai_interview')
+    .select('expires_at')
+    .eq('id', id)
+    .maybeSingle()
+
+  const currentExpiry = session?.expires_at ? new Date(session.expires_at).getTime() : Date.now()
+  const baseTime = Math.max(Date.now(), currentExpiry)
+  const newExpiry = new Date(baseTime + days * 24 * 60 * 60 * 1000).toISOString()
+
+  const { error } = await supabase
+    .from('interview_sessions_ai_interview')
+    .update({ expires_at: newExpiry, updated_at: new Date().toISOString() })
+    .eq('id', id)
+
+  if (error) {
+    const { error: pubError } = await supabasePublic
+      .from('interview_sessions_ai_interview')
+      .update({ expires_at: newExpiry, updated_at: new Date().toISOString() })
+      .eq('id', id)
+    if (pubError) throw error
+  }
 }
 
 export async function updateSessionStatusPublic(id: string, status: InterviewSession['status']): Promise<void> {

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { XCircle, RefreshCw, Copy, Flag, AlertTriangle, ExternalLink, Calendar } from 'lucide-react'
 import toast from 'react-hot-toast'
 import type { InterviewSession } from '@/types'
-import { updateSessionStatus } from '@/api/sessions'
+import { updateSessionStatus, extendSessionExpiry } from '@/api/sessions'
 import { ConfirmDialog } from '@/components/common/ConfirmDialog'
 import { formatDateTime } from '@/utils/formatDate'
 
@@ -24,8 +24,13 @@ export function SessionManager({ session, onUpdate }: SessionManagerProps) {
       await updateSessionStatus(session.id, 'cancelled')
       toast.success('Session cancelled')
       onUpdate()
-    } catch { toast.error('Failed to cancel') }
-    finally { setActionLoading(false); setShowCancel(false) }
+    } catch (err) {
+      console.error('Failed to cancel session:', err)
+      toast.error('Failed to cancel session')
+    } finally {
+      setActionLoading(false)
+      setShowCancel(false)
+    }
   }
 
   const handleFlag = async () => {
@@ -34,23 +39,28 @@ export function SessionManager({ session, onUpdate }: SessionManagerProps) {
       await updateSessionStatus(session.id, 'flagged')
       toast.success('Session flagged for review')
       onUpdate()
-    } catch { toast.error('Failed to flag') }
-    finally { setActionLoading(false); setShowFlag(false) }
+    } catch (err) {
+      console.error('Failed to flag session:', err)
+      toast.error('Failed to flag session')
+    } finally {
+      setActionLoading(false)
+      setShowFlag(false)
+    }
   }
 
   const handleExtend = async () => {
     setActionLoading(true)
     try {
-      const newExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
-      await (await fetch(`/api/v1/sessions/${session.id}/extend`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ expires_at: newExpiry })
-      })).json()
+      await extendSessionExpiry(session.id, 7)
       toast.success('Session extended by 7 days')
       onUpdate()
-    } catch { toast.error('Failed to extend') }
-    finally { setActionLoading(false); setShowExtend(false) }
+    } catch (err) {
+      console.error('Failed to extend session:', err)
+      toast.error('Failed to extend session')
+    } finally {
+      setActionLoading(false)
+      setShowExtend(false)
+    }
   }
 
   const copyLink = () => {
