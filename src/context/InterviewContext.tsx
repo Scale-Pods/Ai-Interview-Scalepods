@@ -5,7 +5,7 @@ import { fetchScorecard } from '@/api/scorecards'
 import { supabasePublic } from '@/api/client'
 import { fetchInterviewBlueprint, saveInterviewBlueprint } from '@/api/interviewBlueprints'
 import { useMediaRecorder } from '@/hooks/useMediaRecorder'
-import { analyzeCandidateFit, generateInterviewerTurn, generateNextInterviewQuestion, analyzeAnswerInRealtime, generateInterviewBlueprint, generateTargetedFollowUp, extractJdToolsAndTech, analyzeResumeJdAlignment } from '@/utils/llm'
+import { analyzeCandidateFit, generateInterviewerTurn, analyzeAnswerInRealtime, generateInterviewBlueprint, generateTargetedFollowUp, extractJdToolsAndTech, analyzeResumeJdAlignment } from '@/utils/llm'
 import { selectNextPlanItem, shouldAskFollowUp } from '@/utils/interviewOrchestrator'
 import type { CandidateAnalysis } from '@/utils/llm'
 
@@ -403,8 +403,11 @@ export function InterviewProvider({ children }: { children: React.ReactNode }) {
           answeredIds.has(question.id)
       ).length
 
-      if (!candidateAnalysisRef.current && (resumeText || jdText)) {
-        console.info('[InterviewContext] Running candidate fit analysis + JD tool extraction + alignment analysis in parallel.')
+
+
+      let activeBlueprint = blueprint
+      if (!activeBlueprint && !candidateAnalysisRef.current && (resumeText || jdText)) {
+        console.info('[InterviewContext] Running fallback candidate fit analysis + JD tool extraction + alignment analysis in parallel.')
         const [analysis, extractedTools, alignment] = await Promise.all([
           analyzeCandidateFit(resumeText, jdText),
           extractJdToolsAndTech(resumeText, jdText),
@@ -413,7 +416,6 @@ export function InterviewProvider({ children }: { children: React.ReactNode }) {
         candidateAnalysisRef.current = { ...analysis, extractedTools, alignment }
       }
 
-      let activeBlueprint = blueprint
       if (!activeBlueprint && candidateAnalysisRef.current) {
         const generatedBlueprint = await generateInterviewBlueprint(session.id, resumeText, jdText, candidateAnalysisRef.current)
         activeBlueprint = await saveInterviewBlueprint(generatedBlueprint)
@@ -802,163 +804,6 @@ export function InterviewProvider({ children }: { children: React.ReactNode }) {
     await recorder.start(sid, streams)
   }, [recorder])
 
-  // Legacy generator retained only for compatibility during an in-flight deployment.
-  // It is deliberately not exposed by the context; the conversational turn loop above is the sole active path.
-  const _generateAndStoreNextQuestion = useCallback(async () => {
-    if (!session || isGeneratingTurnRef.current) return
-    isGeneratingTurnRef.current = true
-    setIsGeneratingTurn(true)
-    try {
-      // Always build the prompt from the database, not from a possibly stale React state snapshot.
-      const [latestQuestions, answersResult] = await Promise.all([
-        fetchQuestions(session.id),
-        supabasePublic
-          .from('interview_answers_ai_interview')
-          .select('*')
-          .eq('session_id', session.id)
-          .order('created_at', { ascending: true })
-      ])
-
-      if (answersResult.error) throw answersResult.error
-
-      const answersMap = new Map((answersResult.data || []).map(a => [a.question_id, a.answer_text]))
-
-      const history = latestQuestions.map(q => ({
-        question: q.question_text,
-        answer: answersMap.get(q.id) || '',
-        type: q.question_type
-      }))
-
-      // The count of actual interview questions excludes the intro question
-      const jobQuestionsAsked = Math.max(0, latestQuestions.length - 1)
-
-      if (!candidateAnalysisRef.current) {
-        console.info('[InterviewContext] Late-init: Running candidate fit analysis + JD tool extraction + alignment analysis in parallel.')
-        const [analysis, extractedTools, alignment] = await Promise.all([
-          analyzeCandidateFit(resumeText, jdText),
-          extractJdToolsAndTech(resumeText, jdText),
-          analyzeResumeJdAlignment(resumeText, jdText)
-        ])
-        candidateAnalysisRef.current = { ...analysis, extractedTools, alignment }
-      }
-
-      // Check if the last answer triggered a follow-up probe
-      const lastSignal = authenticitySignalsRef.current[authenticitySignalsRef.current.length - 1]
-      const lastNote = liveAssessmentNotesRef.current[liveAssessmentNotesRef.current.length - 1]
-      const MAX_FOLLOW_UPS = 2
-
-      // Find the current question in the database so we can check if it's
-      // already a follow-up — follow-ups must not generate more follow-ups.
-      const currentQInDb = latestQuestions.find(q => q.id === lastNote?.question_id)
-      const isFollowUpQuestion = currentQInDb?.source === 'llm_ts_followup'
-      // Track follow-ups by the original (root) question ID so the 2-per-answer
-      // limit applies across the entire follow-up chain, not per follow-up.
-      const trackingKey = isFollowUpQuestion && currentQInDb?.parent_question_id
-        ? currentQInDb.parent_question_id
-        : (currentQInDb?.id || lastNote?.question_id || '')
-      const followUpCount = followUpCountRef.current[trackingKey] || 0
-
-      let forceFollowUp: { question: string; reason: string } | undefined
-
-      if (
-        !isFollowUpQuestion && // follow-up questions must not generate more follow-ups
-        lastNote?.follow_up_prompted &&
-        lastNote?.follow_up_question &&
-        followUpCount < MAX_FOLLOW_UPS &&
-        (lastSignal?.signal === 'vague' || lastSignal?.signal === 'suspicious' || lastSignal?.signal === 'inconsistent')
-      ) {
-        forceFollowUp = {
-          question: lastNote.follow_up_question,
-          reason: `Candidate's previous answer was ${lastSignal.signal}. ${lastNote.note}`
-        }
-        followUpCountRef.current[trackingKey] = followUpCount + 1
-        console.info('[InterviewContext] Triggering follow-up probe due to signal:', lastSignal?.signal)
-      }
-
-      // If no follow-up is needed and there are unanswered questions in the
-      // queue (pre-generated by n8n), skip generation entirely.
-      if (!forceFollowUp) {
-        const answeredIds = new Set((answersResult.data || []).map(a => a.question_id))
-        const hasUnansweredQuestions = latestQuestions.some(q => !answeredIds.has(q.id))
-        if (hasUnansweredQuestions) {
-          console.info('[InterviewContext] Skipping generation — next question already exists and no follow-up needed')
-          return
-        }
-      }
-
-      console.info('[InterviewContext] Generating next question via src/utils/llm.ts', {
-        sessionId: session.id,
-        jobQuestionsAsked,
-        source: forceFollowUp ? 'llm_ts_followup' : 'llm_ts_dynamic',
-        authSignals: authenticitySignalsRef.current.length
-      })
-
-      const nextQ = await generateNextInterviewQuestion(
-        resumeText,
-        jdText,
-        history,
-        jobQuestionsAsked,
-        candidateAnalysisRef.current,
-        '',
-        '',
-        '',
-        authenticitySignalsRef.current,
-        forceFollowUp
-      )
-
-      // Store in DB — position depends on whether this is a follow-up
-      if (forceFollowUp) {
-        // Insert follow-up question right after the current question
-        const currentQId = answersResult.data?.[answersResult.data.length - 1]?.question_id
-        const currentQ = latestQuestions.find(q => q.id === currentQId)
-        const insertIndex = currentQ ? currentQ.order_index + 1 : latestQuestions.length
-
-        // Shift existing questions that come after the insert position to make room
-        const questionsToShift = latestQuestions.filter(q => q.order_index >= insertIndex && q.id !== currentQ?.id)
-        await Promise.all(
-          questionsToShift.map(q =>
-            supabasePublic
-              .from('interview_questions_ai_interview')
-              .update({ order_index: q.order_index + 1 })
-              .eq('id', q.id)
-          )
-        )
-
-        const { error: insertError } = await supabasePublic
-          .from('interview_questions_ai_interview')
-          .insert({
-            session_id: session.id,
-            question_text: nextQ.question_text,
-            question_type: nextQ.question_type,
-            order_index: insertIndex,
-            source: 'llm_ts_followup',
-            parent_question_id: currentQInDb?.id || null
-          })
-        if (insertError) throw insertError
-      } else {
-        // Append regular dynamic question at the end
-        const { error: insertError } = await supabasePublic
-          .from('interview_questions_ai_interview')
-          .insert({
-            session_id: session.id,
-            question_text: nextQ.question_text,
-            question_type: nextQ.question_type,
-            order_index: latestQuestions.length,
-            source: 'llm_ts_dynamic'
-          })
-        if (insertError) throw insertError
-      }
-
-      const questionsData = await fetchQuestions(session.id)
-      setQuestions(questionsData)
-    } catch (err) {
-      console.error('Failed to generate and store next question:', err)
-    } finally {
-      isGeneratingTurnRef.current = false
-      setIsGeneratingTurn(false)
-    }
-  }, [session, resumeText, jdText])
-
   const completeInterview = useCallback(async () => {
     if (!session) return
 
@@ -980,14 +825,6 @@ export function InterviewProvider({ children }: { children: React.ReactNode }) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ session_id: session.id })
     }).catch(err => console.error('Scoring webhook failed:', err))
-
-    import('@/api/scorecards').then(({ scoreInterviewDirectly, fetchScorecard }) => {
-      scoreInterviewDirectly(session.id).then(() => {
-        fetchScorecard(session.id).then(sc => {
-          if (sc) setScorecard(sc)
-        })
-      })
-    }).catch(err => console.error('Direct scoring pipeline failed:', err))
   }, [session, setMediaStreams])
 
   useEffect(() => {

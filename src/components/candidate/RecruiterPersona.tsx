@@ -9,6 +9,7 @@ interface RecruiterPersonaProps {
   liveAssessmentNotes: LiveAssessmentNote[]
   currentQuestionIndex: number
   currentQuestionId: string
+  speakingPhase?: 'acknowledgment' | 'question' | null
 }
 
 type PersonaState = 'idle' | 'speaking' | 'analyzing' | 'generating'
@@ -49,7 +50,8 @@ export function RecruiterPersona({
   isGeneratingTurn,
   liveAssessmentNotes,
   currentQuestionIndex,
-  currentQuestionId
+  currentQuestionId,
+  speakingPhase
 }: RecruiterPersonaProps) {
   const [personaState, setPersonaState] = useState<PersonaState>('idle')
   const [statusText, setStatusText] = useState('Listening...')
@@ -61,19 +63,41 @@ export function RecruiterPersona({
   useEffect(() => {
     if (isAiSpeaking) {
       setPersonaState('speaking')
-      setStatusText('Speaking...')
+      if (speakingPhase === 'acknowledgment') {
+        setStatusText('Acknowledging your answer...')
+      } else if (speakingPhase === 'question') {
+        setStatusText('Reading question aloud...')
+      } else {
+        setStatusText('Speaking...')
+      }
     } else if (isAnalyzingAnswer) {
       setPersonaState('analyzing')
       setStatusText('Analyzing response...')
     } else if (isGeneratingTurn) {
       setPersonaState('generating')
-      setStatusText('Thinking...')
+      setStatusText('Preparing next question...')
     } else {
       setPersonaState('idle')
       setStatusText('Listening...')
     }
     setPulseKey(k => k + 1)
-  }, [isAiSpeaking, isAnalyzingAnswer, isGeneratingTurn])
+
+    if (isAnalyzingAnswer || isGeneratingTurn) {
+      const phrases = isAnalyzingAnswer
+        ? ['Analyzing response...', 'Evaluating technical details...', 'Checking evidence...']
+        : ['Preparing next question...', 'Structuring interview focus...', 'Crafting response...']
+      let idx = 0
+      const timer = setInterval(() => {
+        idx = Math.min(idx + 1, phrases.length - 1)
+        setStatusText(phrases[idx])
+        // Stop ticking once we've reached the final phrase
+        if (idx >= phrases.length - 1) {
+          clearInterval(timer)
+        }
+      }, 2200)
+      return () => clearInterval(timer)
+    }
+  }, [isAiSpeaking, isAnalyzingAnswer, isGeneratingTurn, speakingPhase])
 
   const getAvatarStyle = () => {
     const base = {
@@ -181,36 +205,7 @@ export function RecruiterPersona({
           <span>{statusText}</span>
         </div>
       </div>
-
-      {/* Latest assessment signal — shown after the answer is submitted,
-           i.e. when the latest note belongs to a completed (previous) question,
-           not the question currently being asked. */}
-      {latestNote && latestNote.question_id !== currentQuestionId && (
-        <div
-          className="rounded-xl px-3 py-2 text-[10px] animate-fade-in"
-          style={{
-            background: `color-mix(in srgb, ${getSignalColor(latestNote.authenticity_signal)} 8%, transparent)`,
-            border: `1px solid color-mix(in srgb, ${getSignalColor(latestNote.authenticity_signal)} 20%, transparent)`,
-          }}
-        >
-          {(() => {
-            const Icon = getSignalIcon(latestNote.authenticity_signal)
-            return (
-              <div className="flex items-center gap-1.5">
-                <Icon size={11} style={{ color: getSignalColor(latestNote.authenticity_signal), flexShrink: 0 }} />
-                <span style={{ color: getSignalColor(latestNote.authenticity_signal) }}>
-                  {getSignalLabel(latestNote.authenticity_signal)}
-                </span>
-              </div>
-            )
-          })()}
-        </div>
-      )}
-
-      {/* Progress context */}
-      <p className="text-[10px] text-center" style={{ color: 'var(--label-quaternary, rgba(255,255,255,0.2))' }}>
-        Senior Recruiter Mode · Active
-      </p>
     </div>
   )
 }
+

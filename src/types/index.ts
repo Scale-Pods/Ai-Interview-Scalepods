@@ -22,6 +22,7 @@ export interface Candidate {
 export interface JobDescription {
   id: string;
   candidate_id: string;
+  job_name?: string;
   raw_text: string;
   parsed_skills: string[];
   parsed_years_experience?: number;

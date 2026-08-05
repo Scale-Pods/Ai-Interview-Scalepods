@@ -1,6 +1,6 @@
 import { useEffect, useCallback, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { AlertCircle, CheckCircle, Clock, Camera, Monitor, Upload, Loader2 } from 'lucide-react'
+import { AlertCircle, CheckCircle, Clock, Camera, Monitor, Upload, Loader2, Sparkles, Volume2 } from 'lucide-react'
 import { useInterviewContext } from '@/context/InterviewContext'
 import { useProctoringContext } from '@/context/ProctoringContext'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
@@ -10,7 +10,7 @@ import { useInterviewTimer } from '@/hooks/useInterviewTimer'
 import { AnswerRecorder } from './AnswerRecorder'
 import { Completion } from './Completion'
 import { PreCheck } from './PreCheck'
-import { QuestionDisplay } from './QuestionDisplay'
+import { QuestionDisplay, extractLeadIn } from './QuestionDisplay'
 import { VideoFeed } from './VideoFeed'
 import { ProctoringOverlay } from './ProctoringOverlay'
 import { RecruiterPersona } from './RecruiterPersona'
@@ -59,6 +59,34 @@ export function InterviewRoom() {
   const [completingError, setCompletingError] = useState('')
   const globalTimer = useInterviewTimer(INTERVIEW_TIME_MINUTES)
   const turnIdRef = useRef<string | undefined>(undefined)
+  // Tracks what text the AI is currently reading aloud
+  const [currentlySpeakingText, setCurrentlySpeakingText] = useState('')
+  const [speakingPhase, setSpeakingPhase] = useState<'acknowledgment' | 'question' | null>(null)
+  const [activeVideoTab, setActiveVideoTab] = useState<'camera' | 'screen'>('camera')
+
+  const TURN_GEN_MESSAGES = [
+    { text: 'Reviewing your answer details...', detail: 'Processing key points & practical evidence' },
+    { text: 'Evaluating technical depth & relevance...', detail: 'Checking response alignment against role expectations' },
+    { text: 'Preparing Alex\'s next question...', detail: 'Formulating targeted follow-up or next competency topic' }
+  ]
+  const [turnGenStep, setTurnGenStep] = useState(0)
+
+  useEffect(() => {
+    if (!isGeneratingTurn) {
+      setTurnGenStep(0)
+      return
+    }
+    let step = 0
+    const timer = setInterval(() => {
+      step = Math.min(step + 1, TURN_GEN_MESSAGES.length - 1)
+      setTurnGenStep(step)
+      // Stop ticking once we've reached the final step
+      if (step >= TURN_GEN_MESSAGES.length - 1) {
+        clearInterval(timer)
+      }
+    }, 2500)
+    return () => clearInterval(timer)
+  }, [isGeneratingTurn])
 
   useEffect(() => {
     if (token) loadSession(token)
@@ -135,6 +163,8 @@ export function InterviewRoom() {
   onSpeakCompleteRef.current = () => {
     isAiSpeakingRef.current = false
     setIsAiSpeaking(false)
+    setCurrentlySpeakingText('')
+    setSpeakingPhase(null)
     if (currentTurn?.turn_type === 'closing' && !completionStartedRef.current) {
       // Natural closing — give the candidate a moment then end
       setTimeout(() => {
@@ -143,20 +173,49 @@ export function InterviewRoom() {
     }
   }
 
-  // Speak the interviewer's current turn when it changes
+  // Speak the interviewer's current turn when it changes.
+  // We split into two sequential utterances:
+  //   1. Acknowledgment / lead-in (if present)
+  //   2. The question itself
+  // This guarantees the question is always spoken even if the acknowledgment
+  // causes the browser TTS engine to silently drop the tail of a long string.
   useEffect(() => {
     if (currentTurn && avStream && !completionStartedRef.current) {
-      const textToSpeak = currentTurn.interviewer_text
-      const turnId = `${currentTurn.turn_type}-${textToSpeak.slice(0, 40)}-${Date.now()}`
+      const fullText = currentTurn.interviewer_text
+      const questionText = currentTurn.question_text || fullText
+      const acknowledgment = extractLeadIn(fullText, questionText)
+
+      const turnId = `${currentTurn.turn_type}-${fullText.slice(0, 40)}-${Date.now()}`
       turnIdRef.current = turnId
       isAiSpeakingRef.current = true
       setIsAiSpeaking(true)
-      speak(textToSpeak, () => {
-        // Only process completion if this is still the current turn
-        if (turnIdRef.current === turnId) {
-          onSpeakCompleteRef.current?.()
-        }
-      })
+
+      const speakQuestion = () => {
+        if (turnIdRef.current !== turnId) return
+        setSpeakingPhase('question')
+        setCurrentlySpeakingText(questionText)
+        speak(questionText, () => {
+          if (turnIdRef.current === turnId) {
+            onSpeakCompleteRef.current?.()
+          }
+        })
+      }
+
+      if (acknowledgment) {
+        // Phase 1: speak acknowledgment
+        setSpeakingPhase('acknowledgment')
+        setCurrentlySpeakingText(acknowledgment)
+        speak(acknowledgment, () => {
+          // After acknowledgment finishes, speak the question
+          if (turnIdRef.current === turnId) {
+            // Small pause between acknowledgment and question
+            setTimeout(speakQuestion, 400)
+          }
+        })
+      } else {
+        // No acknowledgment — go straight to question
+        speakQuestion()
+      }
     }
     return () => {
       cancel()
@@ -296,13 +355,32 @@ export function InterviewRoom() {
 
   const timerColor = globalTimer.isExpired ? 'var(--red)' : globalTimer.isWarning ? 'var(--orange)' : 'var(--label-secondary)'
 
-  // Derive the real target from actual loaded questions so follow-up questions
-  // expand the bar rather than clamping the last segment permanently blue,
-  // and so sessions with fewer questions don't leave orphan grey segments.
-  const progressTarget = Math.max(
-    questions.length > 0 ? questions.length : DEFAULT_TARGET_QUESTIONS,
-    currentQuestionIndex + 1  // never let the active index exceed the bar
+  // Progress bar: track only PRIMARY questions (excludes follow-ups and intro)
+  // so that follow-up questions don't cause the bar to jump backward or stall.
+  const primaryQuestions = questions.filter(
+    q => q.source !== 'llm_ts_followup' &&
+         q.source !== 'llm_ts_dynamic_intro' &&
+         q.source !== 'hr_reviewed_intro'
   )
+  const progressTarget = Math.max(
+    primaryQuestions.length > 0 ? primaryQuestions.length : DEFAULT_TARGET_QUESTIONS,
+    1
+  )
+
+  // Find which primary question we're currently on (or just answered)
+  const currentQuestion = questions.find(q => q.id === currentQuestionId)
+  const isCurrentFollowUp = currentQuestion?.source === 'llm_ts_followup'
+  // The primary question index for progress = how many primary questions have been reached
+  const primaryQuestionsAnsweredOrActive = questions.filter(
+    (q, idx) => (
+      q.source !== 'llm_ts_followup' &&
+      q.source !== 'llm_ts_dynamic_intro' &&
+      q.source !== 'hr_reviewed_intro'
+    ) && idx <= currentQuestionIndex
+  ).length
+  // 0-based index into the primary question bar
+  const primaryBarIndex = Math.max(0, primaryQuestionsAnsweredOrActive - 1)
+
   const isClosingTurn = currentTurn?.turn_type === 'closing'
 
   return (
@@ -383,25 +461,91 @@ export function InterviewRoom() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 pb-3">
           <div className="flex items-center gap-1">
             {Array.from({ length: progressTarget }).map((_, i) => {
-              const isActive = i === currentQuestionIndex
-              const isDone = i < currentQuestionIndex
+              const isActive = i === primaryBarIndex && !isClosingTurn
+              const isDone = i < primaryBarIndex || isClosingTurn
               return (
                 <div key={i} className="flex items-center gap-1 flex-1">
-                  <div className="w-full h-1 rounded-full transition-all duration-300" style={{
+                  <div className="w-full h-1 rounded-full transition-all duration-500" style={{
                     background: isActive ? 'var(--blue)' : isDone ? 'var(--green)' : 'var(--fill-tertiary)',
                   }} />
                 </div>
               )
             })}
           </div>
-          <p className="text-[10px] text-center mt-1.5" style={{ color: 'var(--label-tertiary)' }}>
-            Question {currentQuestionIndex + 1} of {progressTarget}
-          </p>
+          <div className="flex items-center justify-center gap-2 mt-1.5">
+            <p className="text-[10px]" style={{ color: 'var(--label-tertiary)' }}>
+              Question {Math.min(primaryBarIndex + 1, progressTarget)} of {progressTarget}
+            </p>
+            {isCurrentFollowUp && (
+              <span
+                className="text-[9px] px-1.5 py-0.5 rounded-md font-bold uppercase tracking-wider"
+                style={{
+                  background: 'color-mix(in srgb, var(--purple) 15%, transparent)',
+                  color: 'var(--purple)',
+                  border: '1px solid color-mix(in srgb, var(--purple) 25%, transparent)'
+                }}
+              >
+                Follow-up
+              </span>
+            )}
+          </div>
         </div>
       </header>
 
       <main className="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 py-6 grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
         <section className="lg:col-span-2 space-y-6">
+          {/* Live speech caption — shows exactly what Alex is currently reading aloud */}
+          {isAiSpeaking && currentlySpeakingText && (
+            <div
+              className="flex items-start gap-3 px-4 py-3 rounded-2xl animate-fade-in"
+              style={{
+                background: speakingPhase === 'acknowledgment'
+                  ? 'color-mix(in srgb, var(--blue) 8%, transparent)'
+                  : 'color-mix(in srgb, var(--purple) 8%, transparent)',
+                border: speakingPhase === 'acknowledgment'
+                  ? '1px solid color-mix(in srgb, var(--blue) 25%, transparent)'
+                  : '1px solid color-mix(in srgb, var(--purple) 25%, transparent)',
+              }}
+            >
+              <div
+                className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 mt-0.5"
+                style={{
+                  background: speakingPhase === 'acknowledgment' ? 'var(--blue)' : 'var(--purple)'
+                }}
+              >
+                <Volume2 size={13} className="text-white" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p
+                  className="text-[10px] font-semibold mb-1 uppercase tracking-wider"
+                  style={{
+                    color: speakingPhase === 'acknowledgment' ? 'var(--blue)' : 'var(--purple)'
+                  }}
+                >
+                  {speakingPhase === 'acknowledgment' ? '🎤 Alex — Acknowledgment' : '🎤 Alex — Question'}
+                </p>
+                <p className="text-sm leading-relaxed" style={{ color: 'var(--label-primary)' }}>
+                  &ldquo;{currentlySpeakingText}&rdquo;
+                </p>
+              </div>
+              {/* Animated equalizer bars */}
+              <div className="flex items-end gap-[3px] h-5 shrink-0 mt-1">
+                {[0, 1, 2, 3].map(i => (
+                  <div
+                    key={i}
+                    className="w-[3px] rounded-full animate-pulse"
+                    style={{
+                      height: `${[60, 100, 80, 40][i]}%`,
+                      background: speakingPhase === 'acknowledgment' ? 'var(--blue)' : 'var(--purple)',
+                      animationDelay: `${i * 0.15}s`,
+                      animationDuration: '0.8s'
+                    }}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+
           {currentTurn && !isClosingTurn && (
             <QuestionDisplay
               question={{
@@ -416,6 +560,8 @@ export function InterviewRoom() {
               questionNumber={currentQuestionIndex}
               totalQuestions={progressTarget}
               interviewerUtterance={currentTurn.interviewer_text}
+              isAiSpeaking={isAiSpeaking}
+              speakingPhase={speakingPhase}
             />
           )}
 
@@ -437,10 +583,26 @@ export function InterviewRoom() {
           )}
 
           {isGeneratingTurn ? (
-            <div className="flex flex-col items-center justify-center p-8 rounded-xl animate-pulse" style={{ background: 'var(--fill-quaternary)' }}>
-              <div className="h-8 w-8 rounded-full animate-spin mb-3" style={{ border: '2px solid rgba(120,120,128,0.3)', borderTopColor: 'var(--blue)' }} />
-              <p className="text-sm font-medium" style={{ color: 'var(--label-secondary)' }}>AI is thinking...</p>
-              <p className="text-[10px] mt-1" style={{ color: 'var(--label-tertiary)' }}>Crafting the next part of our conversation</p>
+            <div className="flex flex-col items-center justify-center p-6 rounded-xl border border-blue-500/20" style={{ background: 'color-mix(in srgb, var(--blue) 5%, var(--fill-quaternary))' }}>
+              <div className="relative flex items-center justify-center mb-3">
+                <div className="h-8 w-8 rounded-full animate-spin" style={{ border: '3px solid rgba(59,130,246,0.2)', borderTopColor: 'var(--blue)' }} />
+                <Sparkles size={14} className="absolute text-blue-400 animate-pulse" />
+              </div>
+              <p className="text-sm font-medium transition-all text-center" style={{ color: 'var(--label-primary)' }}>
+                {TURN_GEN_MESSAGES[turnGenStep].text}
+              </p>
+              <p className="text-xs transition-all text-center mt-1" style={{ color: 'var(--label-tertiary)' }}>
+                {TURN_GEN_MESSAGES[turnGenStep].detail}
+              </p>
+              <div className="w-full max-w-xs h-1 rounded-full overflow-hidden mt-3" style={{ background: 'rgba(255,255,255,0.08)' }}>
+                <div
+                  className="h-full rounded-full transition-all duration-700 ease-out"
+                  style={{
+                    width: `${((turnGenStep + 1) / TURN_GEN_MESSAGES.length) * 100}%`,
+                    background: 'linear-gradient(90deg, #3b82f6, #10b981)'
+                  }}
+                />
+              </div>
             </div>
           ) : (
             currentTurn && !isClosingTurn && (
@@ -485,7 +647,7 @@ export function InterviewRoom() {
           </div>
         </section>
 
-        <aside className="space-y-4 lg:block">
+        <aside className="space-y-4">
           <RecruiterPersona
             isAiSpeaking={isAiSpeaking}
             isAnalyzingAnswer={isAnalyzingAnswer}
@@ -493,34 +655,57 @@ export function InterviewRoom() {
             liveAssessmentNotes={liveAssessmentNotes}
             currentQuestionIndex={currentQuestionIndex}
             currentQuestionId={currentQuestionId || ''}
+            speakingPhase={speakingPhase}
           />
 
-          <details className="lg:hidden" open>
-            <summary className="flex items-center gap-2 text-sm font-medium p-2 rounded-lg transition"
-              style={{ color: 'var(--label-secondary)' }}>
-              <Camera size={14} style={{ color: 'var(--blue)' }} /> Camera & Screen
-            </summary>
-            <div className="mt-2 space-y-3">
-              <VideoFeed stream={avStream} muted label="Camera" className="aspect-video rounded-xl overflow-hidden" />
-              <VideoFeed stream={screenStream} muted mirrored={false} label="Screen" className="aspect-video rounded-xl overflow-hidden" />
+          <div
+            className="rounded-2xl p-3 space-y-3"
+            style={{
+              background: 'rgba(28,28,30,0.6)',
+              backdropFilter: 'blur(20px)',
+              WebkitBackdropFilter: 'blur(20px)',
+              border: '1px solid rgba(255,255,255,0.07)'
+            }}
+          >
+            <div className="flex items-center justify-between px-1">
+              <span className="text-xs font-semibold" style={{ color: 'var(--label-secondary)' }}>
+                Your Video Feed
+              </span>
+              {screenStream && (
+                <div className="flex gap-1 p-0.5 rounded-lg" style={{ background: 'var(--fill-tertiary)' }}>
+                  <button
+                    onClick={() => setActiveVideoTab('camera')}
+                    className={`px-2 py-1 rounded-md text-[10px] font-medium transition-all ${
+                      activeVideoTab === 'camera'
+                        ? 'bg-blue-600 text-white shadow-sm'
+                        : 'text-gray-400 hover:text-white'
+                    }`}
+                  >
+                    Camera
+                  </button>
+                  <button
+                    onClick={() => setActiveVideoTab('screen')}
+                    className={`px-2 py-1 rounded-md text-[10px] font-medium transition-all ${
+                      activeVideoTab === 'screen'
+                        ? 'bg-blue-600 text-white shadow-sm'
+                        : 'text-gray-400 hover:text-white'
+                    }`}
+                  >
+                    Screen
+                  </button>
+                </div>
+              )}
             </div>
-          </details>
-          <div className="hidden lg:block space-y-3">
-            <VideoFeed stream={avStream} muted label="Camera" className="aspect-video rounded-xl overflow-hidden" />
-            <VideoFeed stream={screenStream} muted mirrored={false} label="Screen" className="aspect-video rounded-xl overflow-hidden" />
-          </div>
-          <div className="rounded-xl p-4 text-sm" style={{ background: 'var(--fill-quaternary)', color: 'var(--label-secondary)' }}>
-            <p className="font-medium mb-2" style={{ color: 'var(--label-primary)' }}>Interview Progress</p>
-            <div className="h-2 rounded-full overflow-hidden" style={{ background: 'var(--fill-tertiary)' }}>
-              <div
-                className="h-full transition-all duration-500"
-                style={{ width: `${(currentQuestionIndex + 1) / progressTarget * 100}%`, background: 'var(--blue)' }}
-              />
-            </div>
-            <p className="mt-2 text-xs">{currentQuestionIndex + 1} of {progressTarget} questions</p>
+
+            {activeVideoTab === 'camera' || !screenStream ? (
+              <VideoFeed stream={avStream} muted label="Camera" className="aspect-video rounded-xl overflow-hidden shadow-inner" />
+            ) : (
+              <VideoFeed stream={screenStream} muted mirrored={false} label="Screen" className="aspect-video rounded-xl overflow-hidden shadow-inner" />
+            )}
           </div>
         </aside>
       </main>
     </div>
   )
 }
+

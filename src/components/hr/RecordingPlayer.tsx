@@ -58,10 +58,29 @@ export function RecordingPlayer({ sessionId }: RecordingPlayerProps) {
     return () => clearInterval(poll)
   }, [videoUrl])
 
+  const createdBlobUrlRef = useRef<string | null>(null)
+
+  const cleanupBlobUrl = () => {
+    if (createdBlobUrlRef.current) {
+      URL.revokeObjectURL(createdBlobUrlRef.current)
+      createdBlobUrlRef.current = null
+    }
+  }
+
+  useEffect(() => {
+    return () => {
+      cleanupBlobUrl()
+    }
+  }, [])
+
+  const isChunkedRecording = (recording: Recording) =>
+    recording.storage_path?.includes('/chunks/')
+
   const loadVideo = async (recording: Recording) => {
     setVideoLoading(true)
     setLoadError(null)
     setActiveRecording(recording.id)
+    cleanupBlobUrl()
     setVideoUrl(null)
     setPublicVideoUrl(null)
     setIsPlaying(false)
@@ -76,29 +95,80 @@ export function RecordingPlayer({ sessionId }: RecordingPlayerProps) {
       return
     }
 
-    const { data: signedData, error: signedError } = await supabase
-      .storage
-      .from('recordings')
-      .createSignedUrl(recording.storage_path, 3600)
+    try {
+      if (isChunkedRecording(recording)) {
+        // Concatenate all chunks into a single continuous full recording Blob
+        const chunkDir = recording.storage_path.replace(/\/0\.webm$/, '').replace(/0\.webm$/, '')
+        const { data: chunkList, error: listError } = await supabase
+          .storage
+          .from('recordings')
+          .list(chunkDir, { limit: 200 })
 
-    const { data: publicData } = supabase
-      .storage
-      .from('recordings')
-      .getPublicUrl(recording.storage_path)
+        if (!listError && chunkList && chunkList.length > 0) {
+          const sorted = [...chunkList]
+            .filter(f => f.name.endsWith('.webm'))
+            .sort((a, b) => {
+              const ai = parseInt(a.name.replace('.webm', ''), 10)
+              const bi = parseInt(b.name.replace('.webm', ''), 10)
+              return (isNaN(ai) ? 0 : ai) - (isNaN(bi) ? 0 : bi)
+            })
 
-    const fallbackUrl = publicData?.publicUrl || null
-    setPublicVideoUrl(fallbackUrl)
+          // Fetch all chunk Blobs in parallel
+          const chunkBlobs = await Promise.all(
+            sorted.map(async chunkFile => {
+              const fullPath = `${chunkDir}/${chunkFile.name}`
+              const { data: pub } = supabase.storage.from('recordings').getPublicUrl(fullPath)
+              if (!pub?.publicUrl) throw new Error(`Missing URL for ${chunkFile.name}`)
+              const res = await fetch(pub.publicUrl)
+              if (!res.ok) throw new Error(`HTTP ${res.status} fetching chunk ${chunkFile.name}`)
+              return res.blob()
+            })
+          )
 
-    if (signedData?.signedUrl) {
-      setVideoUrl(signedData.signedUrl)
-    } else if (fallbackUrl) {
-      setVideoUrl(fallbackUrl)
-    } else {
-      const reason = signedError?.message ? ` ${signedError.message}` : ''
-      setLoadError(`Recording URL could not be created.${reason}`)
+          const cleanMime = (recording.mime_type || 'video/webm').split(';')[0] || 'video/webm'
+          const mergedBlob = new Blob(chunkBlobs, { type: cleanMime })
+          const mergedBlobUrl = URL.createObjectURL(mergedBlob)
+          createdBlobUrlRef.current = mergedBlobUrl
+          setVideoUrl(mergedBlobUrl)
+          setVideoLoading(false)
+          return
+        }
+      }
+
+      // Single file fallback
+      const { data: publicData } = supabase
+        .storage
+        .from('recordings')
+        .getPublicUrl(recording.storage_path)
+
+      const fallbackUrl = publicData?.publicUrl || null
+      setPublicVideoUrl(fallbackUrl)
+
+      if (fallbackUrl) {
+        setVideoUrl(fallbackUrl)
+      } else {
+        const { data: signedData, error: signedError } = await supabase
+          .storage
+          .from('recordings')
+          .createSignedUrl(recording.storage_path, 3600)
+
+        if (signedData?.signedUrl) {
+          setVideoUrl(signedData.signedUrl)
+        } else {
+          setLoadError(`Recording URL could not be created.${signedError?.message ? ` ${signedError.message}` : ''}`)
+        }
+      }
+    } catch (err) {
+      console.warn('[RecordingPlayer] Error stitching chunks:', err)
+      const { data: fallbackPub } = supabase.storage.from('recordings').getPublicUrl(recording.storage_path)
+      if (fallbackPub?.publicUrl) {
+        setVideoUrl(fallbackPub.publicUrl)
+      } else {
+        setLoadError('Failed to assemble full recording.')
+      }
+    } finally {
+      setVideoLoading(false)
     }
-
-    setVideoLoading(false)
   }
 
   const togglePlay = () => {
@@ -122,35 +192,71 @@ export function RecordingPlayer({ sessionId }: RecordingPlayerProps) {
     }
   }
 
-  const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const time = Number(e.target.value)
-    if (videoRef.current) videoRef.current.currentTime = time
-    setCurrentTime(time)
-  }
 
   const handleDownload = async (recording: Recording) => {
-    const { data, error } = await supabase
-      .storage
-      .from('recordings')
-      .createSignedUrl(recording.storage_path, 3600)
-    if (data?.signedUrl) {
-      window.open(data.signedUrl, '_blank')
-      return
-    }
+    try {
+      let downloadUrl = videoUrl
+      if (!downloadUrl || activeRecording !== recording.id) {
+        if (isChunkedRecording(recording)) {
+          const chunkDir = recording.storage_path.replace(/\/0\.webm$/, '').replace(/0\.webm$/, '')
+          const { data: chunkList } = await supabase.storage.from('recordings').list(chunkDir, { limit: 200 })
+          if (chunkList?.length) {
+            const sorted = [...chunkList]
+              .filter(f => f.name.endsWith('.webm'))
+              .sort((a, b) => {
+                const ai = parseInt(a.name.replace('.webm', ''), 10)
+                const bi = parseInt(b.name.replace('.webm', ''), 10)
+                return (isNaN(ai) ? 0 : ai) - (isNaN(bi) ? 0 : bi)
+              })
 
-    const { data: publicData } = supabase
-      .storage
-      .from('recordings')
-      .getPublicUrl(recording.storage_path)
-    if (publicData?.publicUrl) {
-      window.open(publicData.publicUrl, '_blank')
-      return
-    }
+            const chunkBlobs = await Promise.all(
+              sorted.map(async f => {
+                const { data: pub } = supabase.storage.from('recordings').getPublicUrl(`${chunkDir}/${f.name}`)
+                const res = await fetch(pub.publicUrl)
+                return res.blob()
+              })
+            )
+            const cleanMime = (recording.mime_type || 'video/webm').split(';')[0] || 'video/webm'
+            const mergedBlob = new Blob(chunkBlobs, { type: cleanMime })
+            downloadUrl = URL.createObjectURL(mergedBlob)
+          }
+        }
+      }
 
-    setLoadError(error?.message || 'Recording download URL could not be created.')
+      if (!downloadUrl) {
+        const { data: publicData } = supabase.storage.from('recordings').getPublicUrl(recording.storage_path)
+        downloadUrl = publicData?.publicUrl || null
+      }
+
+      if (downloadUrl) {
+        const anchor = document.createElement('a')
+        anchor.href = downloadUrl
+        anchor.download = `interview-recording-${sessionId.slice(0, 8)}.webm`
+        document.body.appendChild(anchor)
+        anchor.click()
+        document.body.removeChild(anchor)
+      }
+    } catch (err) {
+      console.error('[RecordingPlayer] Download error:', err)
+    }
   }
 
-  if (loading) return <LoadingSpinner text="Loading recordings..." />
+  const currentRecording = recordings.find(r => r.id === activeRecording)
+  const effectiveDuration = (duration !== null && isFinite(duration) && duration > 0)
+    ? duration
+    : (currentRecording?.duration_secs || null)
+
+  const progressPercent = effectiveDuration && effectiveDuration > 0
+    ? Math.min(100, Math.max(0, (currentTime / effectiveDuration) * 100))
+    : 0
+
+  const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const targetTime = Number(e.target.value)
+    if (videoRef.current && isFinite(targetTime)) {
+      videoRef.current.currentTime = targetTime
+    }
+    setCurrentTime(targetTime)
+  }
 
   const streamLabels: Record<string, string> = {
     camera_video: 'Full Recording (Camera + Screen + Audio)',
@@ -192,9 +298,9 @@ export function RecordingPlayer({ sessionId }: RecordingPlayerProps) {
               Transcript
             </button>
             <div className="flex-1" />
-            {duration !== null && (
+            {effectiveDuration !== null && (
               <span className="text-[10px] mr-3 font-mono" style={{ color: 'var(--label-tertiary)' }}>
-                {formatDuration(Math.floor(currentTime))} / {formatDuration(Math.floor(duration))}
+                {formatDuration(Math.floor(currentTime))} / {formatDuration(Math.floor(effectiveDuration))}
               </span>
             )}
           </div>
@@ -270,16 +376,19 @@ export function RecordingPlayer({ sessionId }: RecordingPlayerProps) {
                     <input
                       type="range"
                       min={0}
-                      max={duration ?? (currentTime || 1)}
-                      step="any"
+                      max={effectiveDuration && effectiveDuration > 0 ? effectiveDuration : 100}
+                      step={0.1}
                       value={currentTime}
                       onChange={handleSeek}
-                      className="w-full h-1 rounded-full appearance-none cursor-pointer"
-                      style={{ background: 'var(--fill-secondary)', accentColor: 'var(--blue)' }}
+                      className="w-full h-1.5 rounded-full appearance-none cursor-pointer"
+                      style={{
+                        background: `linear-gradient(to right, #0a84ff 0%, #0a84ff ${progressPercent}%, rgba(255, 255, 255, 0.2) ${progressPercent}%, rgba(255, 255, 255, 0.2) 100%)`,
+                        accentColor: '#0a84ff'
+                      }}
                     />
                     <div className="flex justify-between text-[9px] font-mono" style={{ color: 'var(--label-tertiary)' }}>
                       <span>{formatDuration(Math.floor(currentTime))}</span>
-                      <span>{duration !== null ? formatDuration(Math.floor(duration)) : '--:--'}</span>
+                      <span>{effectiveDuration ? formatDuration(Math.floor(effectiveDuration)) : '--:--'}</span>
                     </div>
                   </div>
 

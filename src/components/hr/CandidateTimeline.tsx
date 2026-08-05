@@ -74,6 +74,7 @@ export function CandidateTimeline({ session }: CandidateTimelineProps) {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
+    setLoading(true)
     const load = async () => {
       const timeline: TimelineEvent[] = []
 
@@ -142,7 +143,9 @@ export function CandidateTimeline({ session }: CandidateTimelineProps) {
       setLoading(false)
     }
     load()
-  }, [session])
+    // Use session.id (stable string) instead of the session object to avoid
+    // re-running this effect on every parent re-render that passes a new object reference
+  }, [session.id])
 
   if (loading) return <LoadingSpinner text="Loading timeline..." />
 

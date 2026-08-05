@@ -1,0 +1,288 @@
+{
+  "name": "Interview Engine - Single Webhook Router",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "interview-engine",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-interview-engine",
+      "name": "Webhook - Interview Engine",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [-1200, 600],
+      "webhookId": "91a84cfc-6272-4c11-bfd7-b1d0352e609f"
+    },
+    {
+      "parameters": {
+        "mode": "rules",
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.body.action }}",
+                    "rightValue": "analyze-answer",
+                    "operator": { "type": "string", "operation": "equals", "name": "filter.operator.equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "analyze-answer"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.body.action }}",
+                    "rightValue": "generate-turn",
+                    "operator": { "type": "string", "operation": "equals", "name": "filter.operator.equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "generate-turn"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.body.action }}",
+                    "rightValue": "targeted-followup",
+                    "operator": { "type": "string", "operation": "equals", "name": "filter.operator.equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "targeted-followup"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "switch-router",
+      "name": "Route by Action",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [-1000, 600]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json.body || $input.first().json;\nconst { question, answer, resumeText, jdText, history, blueprint, competencyIds, questionType } = input;\nconst isTechnical = questionType === 'technical';\nconst historyText = (history || []).slice(-4).map((h, i) => `Q${i + 1}: ${h.question}\\nA${i + 1}: ${h.answer || '(no answer)'}`).join('\\n\\n');\nconst targetedCompetencies = (blueprint?.competencies || []).filter(c => (competencyIds || []).includes(c.id));\nconst failureModeInstructions = isTechnical ? `\\nFOLLOW-UP FAILURE-MODE EVALUATION (technical questions only):\\nEvaluate whether the candidate's answer has one of these failure modes, in priority order:\\n1. irrelevant — the answer doesn't actually address what was asked\\n2. lacks_evidence — candidate makes a claim with zero concrete proof\\n3. lacks_depth — candidate describes WHAT but not HOW or WHY\\n4. vague — hedgy, buzzword-heavy, or non-committal\\n\\nIf a failure mode applies:\\n  \\\"recommended_action\\\": \\\"follow_up\\\"\\n  \\\"follow_up_prompted\\\": true\\n  \\\"insufficiency_reason\\\": <most severe applicable failure mode>\\n  \\\"follow_up_direction\\\": a single focused sentence describing exactly what evidence is missing\\n\\nIf NO failure mode applies:\\n  \\\"recommended_action\\\": \\\"advance\\\"\\n  \\\"follow_up_prompted\\\": false\\n  \\\"insufficiency_reason\\\": null\\n  \\\"follow_up_direction\\\": null\\n` : `\\nFOLLOW-UP RULES (non-technical):\\nYou MUST set \\\"recommended_action\\\" to \\\"advance\\\", \\\"follow_up_prompted\\\" to false, \\\"insufficiency_reason\\\" to null, \\\"follow_up_direction\\\" to null. No follow-up allowed.\\n`;\nconst prompt = `You are a skeptical senior technical recruiter conducting a live interview. Catch candidates who sound competent but are vague or exaggerating.\\n\\nResume:\\n\\\"\\\"\\\"\\n${resumeText || 'Not provided'}\\n\\\"\\\"\\\"\\n\\nJob Description:\\n\\\"\\\"\\\"\\n${jdText || 'Not provided'}\\n\\\"\\\"\\\"\\n\\nRecent Interview History:\\n${historyText || 'No prior history.'}\\n\\nCurrent Question (type: ${questionType}):\\n${question}\\n\\nTarget competencies and expected evidence:\\n${JSON.stringify(targetedCompetencies)}\\n\\nCandidate's Answer:\\n${answer}\\n\\n${failureModeInstructions}\\n\\nADDITIONAL RULES:\\n- DEFAULT to \\\"vague\\\" if the answer lacks specific details (tools, versions, API names, numbers, project names).\\n- A long high-level answer with buzzwords is still \\\"vague\\\". Length does not equal depth.\\n- Mark \\\"suspicious\\\" if resume claims concrete experience but the answer has no specifics.\\n- Mark \\\"inconsistent\\\" if the answer contradicts the resume.\\n- The note should be a blunt, useful 2-3 sentence assessment calling out exactly what was missing.\\n\\nReturn ONLY this JSON:\\n{\\n  \\\"authenticity_signal\\\": \\\"genuine\\\" | \\\"vague\\\" | \\\"suspicious\\\" | \\\"inconsistent\\\",\\n  \\\"depth_signal\\\": \\\"deep\\\" | \\\"surface\\\" | \\\"empty\\\",\\n  \\\"red_flags\\\": [\\\"specific red flag\\\"],\\n  \\\"note\\\": \\\"blunt 2-3 sentence recruiter note\\\",\\n  \\\"follow_up_prompted\\\": true | false,\\n  \\\"insufficiency_reason\\\": \\\"lacks_depth\\\" | \\\"lacks_evidence\\\" | \\\"vague\\\" | \\\"irrelevant\\\" | null,\\n  \\\"follow_up_direction\\\": \\\"one sentence describing the specific gap to probe, or null\\\",\\n  \\\"recommended_action\\\": \\\"advance\\\" | \\\"follow_up\\\" | \\\"revisit_later\\\",\\n  \\\"confidence\\\": 0-100,\\n  \\\"competency_evidence\\\": [{\\\"competency_id\\\":\\\"string\\\", \\\"rating\\\":\\\"insufficient\\\" | \\\"developing\\\" | \\\"adequate\\\" | \\\"strong\\\", \\\"evidence\\\":\\\"string\\\", \\\"missing_evidence\\\":\\\"string\\\"}]\\n}`;\nreturn [{ json: { prompt } }];"
+      },
+      "id": "build-prompt-analyze-answer",
+      "name": "Build Prompt - Analyze Answer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-800, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{\n  {\n    \"model\": \"gpt-4.1-mini\",\n    \"messages\": [{ \"role\": \"user\", \"content\": $json.prompt }],\n    \"response_format\": { \"type\": \"json_object\" }\n  }\n}}",
+        "options": {}
+      },
+      "id": "openai-analyze-answer",
+      "name": "OpenAI - Analyze Answer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-592, 300],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "WlHKo4N02BhjQPJK",
+          "name": "Header Auth account 7"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const content = JSON.parse($input.first().json.choices[0].message.content);\nreturn [{ json: content }];"
+      },
+      "id": "parse-analyze-answer",
+      "name": "Parse - Analyze Answer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-384, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "respond-analyze-answer",
+      "name": "Respond - Analyze Answer",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [-176, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json.body || $input.first().json;\nconst { resumeText, jdText, history, totalQuestions, analysis, authenticitySignals, lastAssessmentNote, pendingQuestions, planItem, targetQuestion } = input;\nconst truncate = (text, max) => { if (!text) return ''; return text.length > max ? text.slice(0, max) + '...[truncated]' : text; };\nconst INTERVIEW_PLAN = [\n  { category: 'Conceptual 1 of 3', questionType: 'technical', instruction: 'Evaluate high-level conceptual knowledge of required tools.' },\n  { category: 'Conceptual 2 of 3', questionType: 'technical', instruction: 'Assess theoretical knowledge of required tools and design patterns.' },\n  { category: 'Conceptual 3 of 3', questionType: 'technical', instruction: 'Probe foundational engineering concepts.' },\n  { category: 'Applied 1 of 2', questionType: 'technical', instruction: 'Evaluate hands-on project experience with required stack.' },\n  { category: 'Applied 2 of 2', questionType: 'technical', instruction: 'Probe code implementation decisions.' },\n  { category: 'Role fit / gaps 1 of 3', questionType: 'technical', instruction: 'Probe resume projects and experience transferability to JD.' },\n  { category: 'Role fit / gaps 2 of 3', questionType: 'situational', instruction: 'Probe experience mismatch or domain alignment gap.' },\n  { category: 'Role fit / gaps 3 of 3', questionType: 'technical', instruction: 'Probe specific tool claims and depth of usage.' },\n  { category: 'Cultural fit 1 of 2', questionType: 'cultural', instruction: 'Evaluate work style preference, teamwork, and collaboration.' },\n  { category: 'Cultural fit 2 of 2', questionType: 'cultural', instruction: 'Assess values, adaptability, and environment fit.' }\n];\nconst safeTotal = (typeof totalQuestions === 'number' && !isNaN(totalQuestions)) ? totalQuestions : 0;\nconst stageIndex = Math.max(0, Math.min(safeTotal, 9));\nconst interviewStage = INTERVIEW_PLAN[stageIndex] || INTERVIEW_PLAN[0];\nlet focusInstruction = '';\nconst extractedTools = analysis?.extractedTools || [];\nif (planItem) {\n  if (planItem.category === 'gap_probe') {\n    const gap = planItem.gap_ref;\n    focusInstruction = `CATEGORY: gap_probe — Probe a potential gap: \\\"${gap?.description || planItem.objective}\\\". Probe direction: \\\"${gap?.probe_direction || 'Ask how experience transfers'}\\\". TONE: Warm, curious, recruiter frame.`;\n  } else if (planItem.category === 'problem_solving') {\n    focusInstruction = `CATEGORY: problem_solving — Scenario reasoning. Objective: ${planItem.objective || 'Trade-off analysis'}.`;\n  } else if (planItem.category === 'cultural') {\n    focusInstruction = `CATEGORY: cultural — Assess work style. Objective: ${planItem.objective || 'teamwork/collaboration'}`;\n  } else {\n    const tool = planItem.target_tool || 'the required skill';\n    const mode = planItem.verification_mode || 'baseline_check';\n    const matchingToolObj = extractedTools.find(t => t.name.toLowerCase() === tool.toLowerCase());\n    const resumeContext = matchingToolObj?.resume_context || '';\n    if (mode === 'verify_claim') {\n      focusInstruction = `VERIFICATION MODE: verify_claim — claims experience with \\\"${tool}\\\"${resumeContext ? ` (\\\"${resumeContext}\\\")` : ''}. Ask for their OWN practical usage. Objective: ${planItem.objective}`;\n    } else {\n      focusInstruction = `VERIFICATION MODE: baseline_check — \\\"${tool}\\\" required by JD but not on resume. Ask simple baseline awareness question. Objective: ${planItem.objective}`;\n    }\n  }\n} else {\n  focusInstruction = interviewStage.instruction;\n}\nconst lastItem = history && history.length > 0 ? history[history.length - 1] : null;\nconst lastAnswer = lastItem?.answer || '';\nconst prevType = lastItem?.type || '';\nconst nextType = planItem?.question_type || interviewStage.questionType || 'technical';\nconst isPrevTechOrSituational = prevType === 'technical' || prevType === 'situational';\nconst isNextSituationalOrCultural = nextType === 'situational' || nextType === 'cultural' || nextType === 'behavioral';\nconst useSimpleAck = isPrevTechOrSituational && isNextSituationalOrCultural;\nconst instruction1 = useSimpleAck\n  ? `1. TRANSITION RULE: Transitioning from ${prevType} to ${nextType} — acknowledge with exactly \\\"Got it, thank you.\\\" then move on.`\n  : `1. ACKNOWLEDGE the candidate's MOST RECENT answer naturally — reference a specific detail they shared. Do NOT use generic acknowledgments like \\\"Great answer\\\" or \\\"Thanks\\\".`;\nconst recentAuthSignals = authenticitySignals || [];\nconst hasRecentRedFlags = recentAuthSignals.some(s => s.signal === 'suspicious' || s.signal === 'inconsistent');\nconst authenticityContext = recentAuthSignals.length > 0 ? `\\nRecent signals:\\n${recentAuthSignals.map(s => `- Signal: ${s.signal} / Depth: ${s.depth}`).join('\\n')}\\n${hasRecentRedFlags ? 'Probe for specific details.' : ''}` : '';\nconst alreadyAskedQText = (history || []).map((h, i) => `${i + 1}. ${h.question}`).join('\\n') || 'None.';\nconst isNoteMatchingLastItem = Boolean(lastAssessmentNote && lastAssessmentNote.question_id && lastItem && lastItem.id && lastAssessmentNote.question_id === lastItem.id);\nconst validNote = isNoteMatchingLastItem ? lastAssessmentNote?.note : undefined;\nconst lastAnswerContext = lastItem ? `\\nMOST RECENT ANSWER TO ACKNOWLEDGE:\\n- Question: \\\"${lastItem.question}\\\"\\n- Answer: \\\"${lastAnswer || '(no response)'}\\\"${validNote ? `\\n- Assessment: \\\"${validNote}\\\"` : ''}` : '';\nconst pendingContext = (pendingQuestions || []).length > 0 ? `\\nPending questions:\\n${pendingQuestions.map((q, i) => `  ${i + 1}. ${q}`).join('\\n')}` : '';\nconst targetQuestionContext = targetQuestion ? `\\nREQUIRED NEXT QUESTION: \\\"${targetQuestion}\\\"\\nYou MUST ask this specific question next. Prefix it with a warm acknowledgment.` : '';\nconst prompt = `You are Alex, a warm but sharp recruiter. Respond in character.\\n\\nResume:\\n${truncate(resumeText, 2500)}\\n\\nJD:\\n${truncate(jdText, 2500)}\\n\\nHistory:\\n${alreadyAskedQText}\\n${lastAnswerContext}\\n\\n${pendingContext}\\n${targetQuestionContext}\\n\\n${authenticityContext}\\n\\nCurrent stage:\\n- Category: ${interviewStage.category}\\n- Focus: ${focusInstruction}\\n- Required type: ${interviewStage.questionType}\\n\\nINSTRUCTIONS:\\n${instruction1}\\n${lastItem?.type === 'follow_up' ? '2. POST-FOLLOW-UP RULE: Acknowledge in one sentence, then ask next question. Do NOT ask another follow-up.\\n3.' : '2.'} Ask the REQUIRED NEXT QUESTION if provided. Otherwise ask the plan question.\\n3. Warm transition. Sound human.\\n4. Keep it to one question.\\n\\nReturn ONLY this JSON:\\n{\\n  \\\"interviewer_text\\\": \\\"Your utterance\\\",\\n  \\\"question_text\\\": \\\"Question part only\\\",\\n  \\\"turn_type\\\": \\\"question\\\" | \\\"follow_up\\\" | \\\"transition\\\" | \\\"closing\\\",\\n  \\\"question_type\\\": \\\"technical\\\" | \\\"behavioral\\\" | \\\"situational\\\" | \\\"cultural\\\",\\n  \\\"should_continue\\\": true\\n}`;\nreturn [{ json: { prompt } }];"
+      },
+      "id": "build-prompt-generate-turn",
+      "name": "Build Prompt - Generate Turn",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-800, 600]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{\n  {\n    \"model\": \"gpt-4.1-mini\",\n    \"messages\": [{ \"role\": \"user\", \"content\": $json.prompt }],\n    \"response_format\": { \"type\": \"json_object\" }\n  }\n}}",
+        "options": {}
+      },
+      "id": "openai-generate-turn",
+      "name": "OpenAI - Generate Turn",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-592, 600],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "WlHKo4N02BhjQPJK",
+          "name": "Header Auth account 7"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const content = JSON.parse($input.first().json.choices[0].message.content);\nreturn [{ json: content }];"
+      },
+      "id": "parse-generate-turn",
+      "name": "Parse - Generate Turn",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-384, 600]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "respond-generate-turn",
+      "name": "Respond - Generate Turn",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [-176, 600]
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json.body || $input.first().json;\nconst { originalQuestion, candidateAnswer, insufficiencyReason, gapDirection, resumeText } = input;\nconst gapStrategy = {\n  lacks_depth: 'Candidate described WHAT but not HOW or WHY. Ask for the underlying mechanism, reasoning, or trade-off.',\n  lacks_evidence: 'Candidate made a claim with no concrete proof. Ask for a specific metric, number, project name, or example.',\n  vague: 'Candidate was hedgy or generic. Ask for a single specific named instance — a tool name, a command, a team size, a decision, a number.',\n  irrelevant: 'Candidate did not address the question. Gently redirect by rephrasing the original question more concretely.'\n};\nconst prompt = `You are Alex, a warm but sharp senior technical recruiter. The candidate just gave a technically insufficient answer that requires a targeted follow-up.\\n\\nOriginal question you asked:\\n\\\"${originalQuestion}\\\"\\n\\nCandidate's answer:\\n\\\"${candidateAnswer}\\\"\\n\\nFailure mode detected: ${insufficiencyReason}\\nGap to probe: ${gapDirection}\\nStrategy: ${gapStrategy[insufficiencyReason] || 'Ask for a concrete specific example.'}\\n\\nResume excerpt (for context):\\n${resumeText?.slice(0, 400) || 'Not available'}\\n\\nGenerate a single follow-up question that:\\n1. References a specific detail from their answer (something they actually said)\\n2. Directly targets the gap using the strategy above\\n3. Sounds natural and conversational — curious, not accusatory\\n4. Is concise: one clear question, no sub-questions\\n\\nReturn ONLY this JSON:\\n{\\n  \\\"question_text\\\": \\\"The follow-up question (just the question, no preamble)\\\"\\n}`;\nreturn [{ json: { prompt } }];"
+      },
+      "id": "build-prompt-targeted-followup",
+      "name": "Build Prompt - Targeted Followup",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-800, 900]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{\n  {\n    \"model\": \"gpt-4.1-mini\",\n    \"messages\": [{ \"role\": \"user\", \"content\": $json.prompt }],\n    \"response_format\": { \"type\": \"json_object\" }\n  }\n}}",
+        "options": {}
+      },
+      "id": "openai-targeted-followup",
+      "name": "OpenAI - Targeted Followup",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-592, 900],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "WlHKo4N02BhjQPJK",
+          "name": "Header Auth account 7"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const content = JSON.parse($input.first().json.choices[0].message.content);\nreturn [{ json: content }];"
+      },
+      "id": "parse-targeted-followup",
+      "name": "Parse - Targeted Followup",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-384, 900]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "respond-targeted-followup",
+      "name": "Respond - Targeted Followup",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [-176, 900]
+    }
+  ],
+  "connections": {
+    "Webhook - Interview Engine": {
+      "main": [[{ "node": "Route by Action", "type": "main", "index": 0 }]]
+    },
+    "Route by Action": {
+      "main": [
+        [{ "node": "Build Prompt - Analyze Answer", "type": "main", "index": 0 }],
+        [{ "node": "Build Prompt - Generate Turn", "type": "main", "index": 0 }],
+        [{ "node": "Build Prompt - Targeted Followup", "type": "main", "index": 0 }]
+      ]
+    },
+    "Build Prompt - Analyze Answer": {
+      "main": [[{ "node": "OpenAI - Analyze Answer", "type": "main", "index": 0 }]]
+    },
+    "OpenAI - Analyze Answer": {
+      "main": [[{ "node": "Parse - Analyze Answer", "type": "main", "index": 0 }]]
+    },
+    "Parse - Analyze Answer": {
+      "main": [[{ "node": "Respond - Analyze Answer", "type": "main", "index": 0 }]]
+    },
+    "Build Prompt - Generate Turn": {
+      "main": [[{ "node": "OpenAI - Generate Turn", "type": "main", "index": 0 }]]
+    },
+    "OpenAI - Generate Turn": {
+      "main": [[{ "node": "Parse - Generate Turn", "type": "main", "index": 0 }]]
+    },
+    "Parse - Generate Turn": {
+      "main": [[{ "node": "Respond - Generate Turn", "type": "main", "index": 0 }]]
+    },
+    "Build Prompt - Targeted Followup": {
+      "main": [[{ "node": "OpenAI - Targeted Followup", "type": "main", "index": 0 }]]
+    },
+    "OpenAI - Targeted Followup": {
+      "main": [[{ "node": "Parse - Targeted Followup", "type": "main", "index": 0 }]]
+    },
+    "Parse - Targeted Followup": {
+      "main": [[{ "node": "Respond - Targeted Followup", "type": "main", "index": 0 }]]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "11e350345aae172743fe2665ba36f76304fbd6b68282474d7d08206f6a010061"
+  }
+}

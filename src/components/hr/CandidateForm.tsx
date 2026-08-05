@@ -1,13 +1,13 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   UserPlus, Upload, FileText, Send, Copy, CheckCircle, ExternalLink,
   File, X, AlertCircle, ChevronRight, Mail, User, Briefcase, Sparkles, Plus, Trash2,
-  Shield, ChevronDown, ChevronUp, Search
+  Shield, ChevronDown, ChevronUp, Search, History, RotateCcw
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { extractTextFromFile } from '@/utils/mediaHelpers'
-import { analyzeCandidateFit, generateNextInterviewQuestion, auditResumeTruthfulness } from '@/utils/llm'
+import { analyzeCandidate } from '@/utils/llm'
 import type { CandidateAnalysis, ResumeTruthAudit } from '@/utils/llm'
 
 type FormStep = 'details' | 'jd' | 'review'
@@ -27,6 +27,7 @@ function formatFileSize(bytes: number) {
 interface CandidateFormData {
   name: string
   email: string
+  jobName: string
   jobDescription: string
   jobDescriptionFile: File | null
   resume: File | null
@@ -54,11 +55,28 @@ interface CandidateFormProps {
 
 const QUESTION_TYPE_OPTIONS: DraftQuestionType[] = ['technical', 'behavioral', 'situational', 'cultural']
 const TARGET_JOB_QUESTIONS = 10
+const DRAFT_KEY = 'ai_interviewer_candidate_draft'
+
+interface PersistedDraft {
+  form: Omit<CandidateFormData, 'resume' | 'jobDescriptionFile'>
+  resumeFileName: string | null
+  jdFileName: string | null
+  step: FormStep
+  submitted: boolean
+  candidateInfo: CandidateIntakeResult | null
+  resumeText: string
+  jdText: string
+  draftQuestions: DraftQuestion[]
+  candidateAnalysis: CandidateAnalysis | null
+  resumeAudit: ResumeTruthAudit | null
+  inviteLink: string | null
+  savedAt: number
+}
 
 export function CandidateForm({ onSuccess }: CandidateFormProps) {
   const queryClient = useQueryClient()
   const [form, setForm] = useState<CandidateFormData>({
-    name: '', email: '', jobDescription: '', jobDescriptionFile: null, resume: null
+    name: '', email: '', jobName: '', jobDescription: '', jobDescriptionFile: null, resume: null
   })
   const [step, setStep] = useState<FormStep>('details')
   const [submitted, setSubmitted] = useState(false)
@@ -76,7 +94,114 @@ export function CandidateForm({ onSuccess }: CandidateFormProps) {
   const resumeRef = useRef<HTMLInputElement>(null)
   const jdFileRef = useRef<HTMLInputElement>(null)
 
+  // ── Draft persistence ──────────────────────────────────────────────────────
+  const [hasSavedDraft, setHasSavedDraft] = useState(false)
+  const [savedDraft, setSavedDraft] = useState<PersistedDraft | null>(null)
+  const [draftRestored, setDraftRestored] = useState(false)
+  const [fileNoteVisible, setFileNoteVisible] = useState(false)
+  // Track whether the user has touched the form (to avoid saving empty forms)
+  const hasActivityRef = useRef(false)
+
+  const [generationStep, setGenerationStep] = useState(0)
+
+  const GENERATION_STAGES = [
+    { label: 'Reading resume & job description...', detail: 'Extracting key technical requirements and tools' },
+    { label: 'Analyzing candidate fit & skill alignment...', detail: 'Comparing resume experience against role expectations' },
+    { label: 'Auditing resume truthfulness...', detail: 'Checking claim specifics and depth verification targets' },
+    { label: 'Formulating tailored screening questions...', detail: 'Structuring questions with target competencies and evaluation strategies' }
+  ]
+
+  useEffect(() => {
+    if (!questionsGenerating) {
+      setGenerationStep(0)
+      return
+    }
+    const interval = setInterval(() => {
+      setGenerationStep(s => (s + 1) % GENERATION_STAGES.length)
+    }, 2800)
+    return () => clearInterval(interval)
+  }, [questionsGenerating])
+
+  // ── Draft: detect saved draft on mount ───────────────────────────────────
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(DRAFT_KEY)
+      if (!raw) return
+      const draft = JSON.parse(raw) as PersistedDraft
+      // Only surface the draft if there is something meaningful saved
+      if (draft.form?.name || draft.form?.email || draft.candidateInfo || draft.draftQuestions?.length) {
+        setHasSavedDraft(true)
+        setSavedDraft(draft)
+      }
+    } catch {
+      // Ignore malformed draft
+    }
+  }, [])
+
+  // ── Draft: auto-save on every relevant state change ───────────────────────
+  useEffect(() => {
+    if (!hasActivityRef.current) return
+    const draft: PersistedDraft = {
+      form: { name: form.name, email: form.email, jobName: form.jobName, jobDescription: form.jobDescription },
+      resumeFileName: form.resume?.name || null,
+      jdFileName: form.jobDescriptionFile?.name || null,
+      step,
+      submitted,
+      candidateInfo,
+      resumeText,
+      jdText,
+      draftQuestions,
+      candidateAnalysis,
+      resumeAudit,
+      inviteLink,
+      savedAt: Date.now(),
+    }
+    try {
+      localStorage.setItem(DRAFT_KEY, JSON.stringify(draft))
+    } catch {
+      // Ignore quota errors
+    }
+  }, [form, step, submitted, candidateInfo, resumeText, jdText, draftQuestions, candidateAnalysis, resumeAudit, inviteLink])
+
+  const clearDraft = useCallback(() => {
+    try { localStorage.removeItem(DRAFT_KEY) } catch { /* ignore */ }
+    setHasSavedDraft(false)
+    setSavedDraft(null)
+    setDraftRestored(false)
+    setFileNoteVisible(false)
+  }, [])
+
+  const restoreDraft = useCallback(() => {
+    if (!savedDraft) return
+    hasActivityRef.current = true
+    setForm({
+      name: savedDraft.form.name,
+      email: savedDraft.form.email,
+      jobName: savedDraft.form.jobName,
+      jobDescription: savedDraft.form.jobDescription,
+      resume: null,
+      jobDescriptionFile: null,
+    })
+    setStep(savedDraft.step)
+    setSubmitted(savedDraft.submitted)
+    setCandidateInfo(savedDraft.candidateInfo)
+    setResumeText(savedDraft.resumeText || '')
+    setJdText(savedDraft.jdText || '')
+    setDraftQuestions(savedDraft.draftQuestions || [])
+    setCandidateAnalysis(savedDraft.candidateAnalysis)
+    setResumeAudit(savedDraft.resumeAudit)
+    setInviteLink(savedDraft.inviteLink)
+    if (savedDraft.draftQuestions?.length) setShowIntelligencePanel(true)
+    // If intake hasn't run yet and files were used, show a note to re-upload
+    if (!savedDraft.submitted && (savedDraft.resumeFileName || savedDraft.jdFileName)) {
+      setFileNoteVisible(true)
+    }
+    setHasSavedDraft(false)
+    setDraftRestored(true)
+  }, [savedDraft])
+
   const setField = <K extends keyof CandidateFormData>(key: K, value: CandidateFormData[K]) => {
+    hasActivityRef.current = true
     setForm(f => ({ ...f, [key]: value }))
     setErrors(e => ({ ...e, [key]: undefined }))
   }
@@ -86,6 +211,7 @@ export function CandidateForm({ onSuccess }: CandidateFormProps) {
     if (!form.name.trim()) e.name = 'Name is required'
     if (!form.email.trim()) e.email = 'Email is required'
     else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) e.email = 'Invalid email'
+    if (!form.jobName.trim()) e.jobName = 'Job name is required'
     setErrors(e)
     return Object.keys(e).length === 0
   }
@@ -112,7 +238,7 @@ export function CandidateForm({ onSuccess }: CandidateFormProps) {
       const response = await fetch(webhookUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: data.name, email: data.email, jobDescription: jdText, resume: resumeText })
+        body: JSON.stringify({ name: data.name, email: data.email, jobName: data.jobName, jobDescription: jdText, resume: resumeText })
       })
       if (!response.ok) throw new Error('Failed to submit candidate')
       const intake = await response.json() as CandidateIntakeResult
@@ -133,44 +259,20 @@ export function CandidateForm({ onSuccess }: CandidateFormProps) {
       queryClient.invalidateQueries({ queryKey: ['candidates'] })
       queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] })
       toast.success('Candidate submitted successfully')
-      await generateDraftQuestions(resumeText, jdText)
+      await generateDraftQuestions(intake.resume_id || '', intake.jd_id || '')
     },
     onError: (err: Error) => toast.error(err.message)
   })
 
-  const generateDraftQuestions = async (resumeRaw: string, jdRaw: string) => {
+  const generateDraftQuestions = async (resumeId: string, jdId: string) => {
     setQuestionsGenerating(true)
     setCandidateAnalysis(null)
     setResumeAudit(null)
     try {
-      const [analysis, audit] = await Promise.allSettled([
-        analyzeCandidateFit(resumeRaw, jdRaw),
-        auditResumeTruthfulness(resumeRaw, jdRaw)
-      ])
-      const fitResult = analysis.status === 'fulfilled' ? analysis.value : null
-      const auditResult = audit.status === 'fulfilled' ? audit.value : null
-      setCandidateAnalysis(fitResult)
-      setResumeAudit(auditResult)
-
-      const history: Array<{ question: string; answer: string; type: string }> = []
-      const generated: DraftQuestion[] = []
-
-      for (let i = 0; i < TARGET_JOB_QUESTIONS; i += 1) {
-        const next = await generateNextInterviewQuestion(resumeRaw, jdRaw, history, i, fitResult, '', '', '')
-        const question = {
-          question_text: next.question_text,
-          question_type: next.question_type,
-          strategy: next.follow_up_reason
-        }
-        generated.push(question)
-        history.push({
-          question: question.question_text,
-          answer: '',
-          type: question.question_type
-        })
-      }
-
-      setDraftQuestions(generated)
+      const result = await analyzeCandidate(resumeId, jdId)
+      setCandidateAnalysis(result?.fitAnalysis || null)
+      setResumeAudit(result?.truthAudit || null)
+      setDraftQuestions(result?.draftQuestions || [])
       toast.success('Questions ready for review')
       setShowIntelligencePanel(true)
     } catch (err) {
@@ -213,7 +315,7 @@ export function CandidateForm({ onSuccess }: CandidateFormProps) {
     setDraftQuestions(prev => prev.filter((_, i) => i !== index))
   }
 
-  const reviewedQuestions = draftQuestions
+  const reviewedQuestions = (draftQuestions || [])
     .map((q, i) => ({
       question_text: q.question_text.trim(),
       question_type: q.question_type,
@@ -234,6 +336,7 @@ export function CandidateForm({ onSuccess }: CandidateFormProps) {
         body: JSON.stringify({
           name: candidateInfo?.name || form.name,
           email: candidateInfo?.email || form.email,
+          jobName: form.jobName,
           candidate_id: candidateInfo?.candidate_id,
           jd_id: candidateInfo?.jd_id,
           resume_id: candidateInfo?.resume_id,
@@ -248,6 +351,7 @@ export function CandidateForm({ onSuccess }: CandidateFormProps) {
       return response.json().catch(() => ({}))
     },
     onSuccess: (data) => {
+      clearDraft() // invite sent — wipe the saved draft
       const link = data.invite_link || data.link || data.url || ''
       if (link) {
         setInviteLink(link)
@@ -268,6 +372,7 @@ export function CandidateForm({ onSuccess }: CandidateFormProps) {
 
   const handleSubmitForm = (e: React.FormEvent) => {
     e.preventDefault()
+    hasActivityRef.current = true
     if (!validateDetails() || !validateJD()) return
     intakeMutation.mutate(form)
   }
@@ -317,7 +422,7 @@ export function CandidateForm({ onSuccess }: CandidateFormProps) {
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => generateDraftQuestions(resumeText, jdText)}
+                    onClick={() => generateDraftQuestions(candidateInfo?.resume_id || '', candidateInfo?.jd_id || '')}
                     disabled={questionsGenerating || inviteMutation.isPending}
                     className="btn-secondary text-xs"
                   >
@@ -344,10 +449,28 @@ export function CandidateForm({ onSuccess }: CandidateFormProps) {
               </div>
 
               {questionsGenerating ? (
-                <div className="flex flex-col items-center gap-3 py-6 rounded-xl" style={{ background: 'var(--fill-quaternary)' }}>
-                  <div className="h-6 w-6 rounded-full animate-spin" style={{ border: '2px solid rgba(120,120,128,0.3)', borderTopColor: 'var(--blue)' }} />
-                  <p className="text-sm" style={{ color: 'var(--label-secondary)' }}>Analyzing resume &amp; generating tailored questions...</p>
-                  <p className="text-xs" style={{ color: 'var(--label-tertiary)' }}>Running skill gap analysis and resume truthfulness audit</p>
+                <div className="flex flex-col items-center gap-3 py-6 px-4 rounded-xl border border-blue-500/20" style={{ background: 'color-mix(in srgb, var(--blue) 5%, var(--fill-quaternary))' }}>
+                  <div className="relative flex items-center justify-center">
+                    <div className="h-8 w-8 rounded-full animate-spin" style={{ border: '3px solid rgba(59,130,246,0.2)', borderTopColor: 'var(--blue)' }} />
+                    <Sparkles size={14} className="absolute text-blue-400 animate-pulse" />
+                  </div>
+                  <div className="text-center space-y-1 max-w-sm">
+                    <p className="text-sm font-medium transition-all" style={{ color: 'var(--label-primary)' }}>
+                      {GENERATION_STAGES[generationStep].label}
+                    </p>
+                    <p className="text-xs transition-all" style={{ color: 'var(--label-tertiary)' }}>
+                      {GENERATION_STAGES[generationStep].detail}
+                    </p>
+                  </div>
+                  <div className="w-full max-w-xs h-1.5 rounded-full overflow-hidden mt-1" style={{ background: 'rgba(255,255,255,0.08)' }}>
+                    <div
+                      className="h-full rounded-full transition-all duration-700 ease-out"
+                      style={{
+                        width: `${((generationStep + 1) / GENERATION_STAGES.length) * 100}%`,
+                        background: 'linear-gradient(90deg, #3b82f6, #6366f1)'
+                      }}
+                    />
+                  </div>
                 </div>
               ) : (
                 <div className="space-y-3">
@@ -642,8 +765,10 @@ export function CandidateForm({ onSuccess }: CandidateFormProps) {
               <div className="flex gap-2">
                 <button
                   onClick={() => {
+                    clearDraft()
+                    hasActivityRef.current = false
                     setSubmitted(false)
-                    setForm({ name: '', email: '', jobDescription: '', jobDescriptionFile: null, resume: null })
+                    setForm({ name: '', email: '', jobName: '', jobDescription: '', jobDescriptionFile: null, resume: null })
                     setInviteLink(null)
                     setCandidateInfo(null)
                     setCopied(false)
@@ -671,6 +796,59 @@ export function CandidateForm({ onSuccess }: CandidateFormProps) {
         <UserPlus size={24} style={{ color: 'var(--blue)' }} />
         <h1 className="text-2xl font-bold">New Interview Request</h1>
       </div>
+
+      {/* ── Draft resume banner ── */}
+      {hasSavedDraft && savedDraft && (
+        <div
+          className="mb-6 rounded-xl px-4 py-3.5 flex items-start gap-3 animate-fade-in"
+          style={{
+            background: 'color-mix(in srgb, var(--blue) 8%, var(--fill-quaternary))',
+            border: '1px solid color-mix(in srgb, var(--blue) 25%, transparent)'
+          }}
+        >
+          <History size={18} className="shrink-0 mt-0.5" style={{ color: 'var(--blue)' }} />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold" style={{ color: 'var(--label-primary)' }}>
+              Continue where you left off
+            </p>
+            <p className="text-xs mt-0.5" style={{ color: 'var(--label-secondary)' }}>
+              {savedDraft.form.name
+                ? <><span className="font-medium">{savedDraft.form.name}</span>{savedDraft.form.email ? ` · ${savedDraft.form.email}` : ''}</>  
+                : 'Unfinished candidate form'
+              }
+              {savedDraft.submitted && savedDraft.draftQuestions?.length > 0 && (
+                <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded-full font-medium" style={{ background: 'color-mix(in srgb, var(--green) 20%, transparent)', color: 'var(--green)' }}>
+                  {savedDraft.draftQuestions.length} questions ready
+                </span>
+              )}
+              {savedDraft.savedAt && (
+                <span className="ml-2" style={{ color: 'var(--label-tertiary)' }}>
+                  · saved {new Date(savedDraft.savedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                </span>
+              )}
+            </p>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => { clearDraft(); hasActivityRef.current = false }}
+              className="text-xs px-2.5 py-1.5 rounded-lg transition"
+              style={{ color: 'var(--label-tertiary)', background: 'var(--fill-tertiary)' }}
+              title="Discard draft and start fresh"
+            >
+              <RotateCcw size={12} className="inline mr-1" />
+              Start fresh
+            </button>
+            <button
+              type="button"
+              onClick={restoreDraft}
+              className="btn-primary !text-xs !px-3 !py-1.5"
+            >
+              Continue
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="flex items-center gap-1 mb-8">
         {STEP_CONFIG.map((s, i) => {
@@ -738,11 +916,48 @@ export function CandidateForm({ onSuccess }: CandidateFormProps) {
               </div>
               {errors.email && <p className="text-xs mt-1 flex items-center gap-1" style={{ color: 'var(--red)' }}><AlertCircle size={11} />{errors.email}</p>}
             </div>
+
+            <div>
+              <label className="block text-sm font-medium mb-1.5 flex items-center gap-1.5" style={{ color: 'var(--label-secondary)' }}>
+                <Briefcase size={14} style={{ color: 'var(--blue)' }} /> Job Name / Position *
+              </label>
+              <div className="flex items-center gap-2 px-3 input-field" style={errors.jobName ? { outlineColor: 'var(--red)' } : undefined}>
+                <Briefcase size={15} className="shrink-0" style={{ color: 'var(--label-tertiary)' }} />
+                <input
+                  type="text" value={form.jobName}
+                  onChange={e => setField('jobName', e.target.value)}
+                  className="flex-1 bg-transparent border-none outline-none text-sm py-2"
+                  style={{ color: 'var(--label-primary)' }}
+                  placeholder="e.g. Senior Frontend Engineer"
+                />
+              </div>
+              {errors.jobName && <p className="text-xs mt-1 flex items-center gap-1" style={{ color: 'var(--red)' }}><AlertCircle size={11} />{errors.jobName}</p>}
+            </div>
           </div>
         )}
 
         {step === 'jd' && (
           <div className="space-y-4 animate-fade-in">
+            {/* File re-upload note shown when draft was restored before intake ran */}
+            {fileNoteVisible && !submitted && (
+              <div
+                className="flex items-start gap-2.5 px-3 py-2.5 rounded-xl animate-fade-in"
+                style={{
+                  background: 'color-mix(in srgb, var(--orange) 8%, var(--fill-quaternary))',
+                  border: '1px solid color-mix(in srgb, var(--orange) 25%, transparent)'
+                }}
+              >
+                <AlertCircle size={14} className="shrink-0 mt-0.5" style={{ color: 'var(--orange)' }} />
+                <div className="flex-1">
+                  <p className="text-xs font-medium" style={{ color: 'var(--orange)' }}>Files need to be re-uploaded</p>
+                  <p className="text-[11px] mt-0.5" style={{ color: 'var(--label-secondary)' }}>
+                    Your form details have been restored. Because files can't be saved locally, please re-upload the resume{savedDraft?.jdFileName ? ' and JD file' : ''} to continue.
+                    {savedDraft?.resumeFileName && <span className="block mt-0.5 font-mono text-[10px]" style={{ color: 'var(--label-tertiary)' }}>Previously: {savedDraft.resumeFileName}</span>}
+                  </p>
+                </div>
+                <button type="button" onClick={() => setFileNoteVisible(false)} className="shrink-0 p-0.5" style={{ color: 'var(--label-tertiary)' }}><X size={12} /></button>
+              </div>
+            )}
             <div>
               <label className="block text-sm font-medium mb-1.5 flex items-center gap-1.5" style={{ color: 'var(--label-secondary)' }}>
                 <FileText size={14} style={{ color: 'var(--blue)' }} /> Resume
@@ -846,6 +1061,11 @@ export function CandidateForm({ onSuccess }: CandidateFormProps) {
                   <div>
                     <p className="text-sm" style={{ color: 'var(--label-secondary)' }}>{form.name || '—'}</p>
                     <p className="text-xs" style={{ color: 'var(--label-tertiary)' }}>{form.email || '—'}</p>
+                    {form.jobName && (
+                      <p className="text-xs flex items-center gap-1 mt-0.5" style={{ color: 'var(--label-tertiary)' }}>
+                        <Briefcase size={10} /> {form.jobName}
+                      </p>
+                    )}
                   </div>
                 </div>
                 <button type="button" onClick={() => setStep('details')} className="text-xs transition" style={{ color: 'var(--blue)' }}>Edit</button>
@@ -885,7 +1105,7 @@ export function CandidateForm({ onSuccess }: CandidateFormProps) {
             </button>
           )}
           {step !== 'review' ? (
-            <button type="button" onClick={handleNext} className="btn-primary flex-1">
+            <button type="button" onClick={() => { hasActivityRef.current = true; handleNext() }} className="btn-primary flex-1">
               Next <ChevronRight size={16} />
             </button>
           ) : (

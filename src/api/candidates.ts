@@ -1,5 +1,5 @@
-import { api, supabase } from './client'
-import type { Candidate, CandidateFormData, DashboardStats, InterviewSession } from '@/types'
+import { supabase } from './client'
+import type { Candidate, DashboardStats, InterviewSession } from '@/types'
 
 export async function fetchCandidates(): Promise<Candidate[]> {
   const { data, error } = await supabase
@@ -8,20 +8,6 @@ export async function fetchCandidates(): Promise<Candidate[]> {
     .order('created_at', { ascending: false })
   if (error) throw error
   return data
-}
-
-export async function fetchCandidate(id: string): Promise<Candidate> {
-  return api.get<Candidate>(`/candidates/${id}`)
-}
-
-export async function createCandidate(data: CandidateFormData): Promise<Candidate> {
-  return api.post<Candidate>('/candidates', {
-    name: data.name,
-    email: data.email,
-    job_description: data.jobDescription,
-    resume_text: data.resume,
-    metadata: data.metadata
-  })
 }
 
 export async function deleteCandidate(candidateId: string): Promise<void> {

@@ -1,8 +1,8 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Search, ExternalLink, Copy, ArrowUpDown, ArrowUp, ArrowDown,
-  Users, Filter, ChevronLeft, ChevronRight, Inbox, UserPlus, Trash2
+  Users, Filter, ChevronLeft, ChevronRight, Inbox, UserPlus, Trash2, History, ChevronRight as ContinueIcon
 } from 'lucide-react'
 import { fetchSessions } from '@/api/sessions'
 import { fetchCandidates, deleteCandidate } from '@/api/candidates'
@@ -43,6 +43,17 @@ const statusBadge = (status: string) => {
   return map[status] || 'badge-grey'
 }
 
+const DRAFT_KEY = 'ai_interviewer_candidate_draft'
+
+interface DraftSummary {
+  name: string
+  email: string
+  step: string
+  submitted: boolean
+  questionCount: number
+  savedAt: number
+}
+
 export function CandidateList({ onSessionClick }: CandidateListProps) {
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<StatusTab>('all')
@@ -50,21 +61,53 @@ export function CandidateList({ onSessionClick }: CandidateListProps) {
   const [sortDir, setSortDir] = useState<SortDir>('desc')
   const [page, setPage] = useState(0)
   const [deleteTarget, setDeleteTarget] = useState<InterviewSession | null>(null)
+  const [draftSummary, setDraftSummary] = useState<DraftSummary | null>(null)
   const queryClient = useQueryClient()
 
-  const { data: sessions = [], isLoading: sessionsLoading } = useQuery({
+  // Read draft from localStorage on mount and whenever the window regains focus
+  useEffect(() => {
+    const readDraft = () => {
+      try {
+        const raw = localStorage.getItem(DRAFT_KEY)
+        if (!raw) { setDraftSummary(null); return }
+        const d = JSON.parse(raw)
+        if (d.form?.name || d.form?.email || d.candidateInfo) {
+          setDraftSummary({
+            name: d.form?.name || '',
+            email: d.form?.email || '',
+            step: d.step || 'details',
+            submitted: !!d.submitted,
+            questionCount: d.draftQuestions?.length || 0,
+            savedAt: d.savedAt || 0,
+          })
+        } else {
+          setDraftSummary(null)
+        }
+      } catch {
+        setDraftSummary(null)
+      }
+    }
+    readDraft()
+    window.addEventListener('focus', readDraft)
+    return () => window.removeEventListener('focus', readDraft)
+  }, [])
+
+  const { data: sessions = [], isLoading: sessionsLoading, isFetching: sessionsFetching } = useQuery({
     queryKey: ['sessions'],
     queryFn: fetchSessions,
-    staleTime: 0,
+    staleTime: 30_000,  // 30s — avoid flash-of-loading on every navigation
   })
 
-  const { data: candidates = [], isLoading: candidatesLoading } = useQuery({
+  const { data: candidates = [], isLoading: candidatesLoading, isFetching: candidatesFetching } = useQuery({
     queryKey: ['candidates'],
     queryFn: fetchCandidates,
-    staleTime: 0,
+    staleTime: 30_000,
   })
 
+  // isLoading = true only on the very first fetch (no cached data yet)
+  // isFetching = true on any fetch including background refetches
   const isLoading = sessionsLoading || candidatesLoading
+  const isRefreshing = (sessionsFetching || candidatesFetching) && !isLoading
 
   const deleteMutation = useMutation({
     mutationFn: (candidateId: string) => deleteCandidate(candidateId),
@@ -177,6 +220,19 @@ export function CandidateList({ onSessionClick }: CandidateListProps) {
     return counts
   }, [mergedAll])
 
+  // Whether the draft row should appear (matches search if any)
+  const showDraftRow = !!draftSummary && statusFilter === 'all' && (
+    !search ||
+    draftSummary.name.toLowerCase().includes(search.toLowerCase()) ||
+    draftSummary.email.toLowerCase().includes(search.toLowerCase())
+  )
+
+  const stepLabel: Record<string, string> = {
+    details: 'Step 1 — Details',
+    jd: 'Step 2 — Job & Resume',
+    review: 'Step 3 — Review',
+  }
+
   const SortIcon = ({ field }: { field: SortField }) => {
     if (sortField !== field) return <ArrowUpDown size={12} className="opacity-30" />
     return sortDir === 'asc' ? <ArrowUp size={12} /> : <ArrowDown size={12} />
@@ -200,6 +256,12 @@ export function CandidateList({ onSessionClick }: CandidateListProps) {
           <Users size={24} style={{ color: 'var(--blue)' }} />
           Candidates
           <span className="text-sm font-normal" style={{ color: 'var(--label-tertiary)' }}>({mergedAll.length})</span>
+          {isRefreshing && (
+            <span className="text-[10px] flex items-center gap-1" style={{ color: 'var(--label-quaternary, rgba(255,255,255,0.2))' }}>
+              <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: 'var(--blue)' }} />
+              Refreshing
+            </span>
+          )}
         </h1>
         <div className="relative w-full sm:w-72">
           <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2" style={{ color: 'var(--label-secondary)' }} />
@@ -275,6 +337,74 @@ export function CandidateList({ onSessionClick }: CandidateListProps) {
                 </tr>
               </thead>
               <tbody>
+                {/* ── Draft row pinned at top ── */}
+                {showDraftRow && draftSummary && (
+                  <tr
+                    className="group"
+                    style={{
+                      borderBottom: '1px solid var(--separator)',
+                      background: 'color-mix(in srgb, var(--blue) 4%, transparent)'
+                    }}
+                  >
+                    <td className="px-4 py-3.5">
+                      <div className="flex items-center gap-3">
+                        <div
+                          className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0"
+                          style={{ background: 'color-mix(in srgb, var(--blue) 25%, transparent)', color: 'var(--blue)' }}
+                        >
+                          {draftSummary.name?.[0]?.toUpperCase() || <History size={14} />}
+                        </div>
+                        <div>
+                          <p className="text-sm font-medium" style={{ color: 'var(--label-primary)' }}>
+                            {draftSummary.name || 'Unnamed candidate'}
+                          </p>
+                          <p className="text-xs" style={{ color: 'var(--label-tertiary)' }}>
+                            {draftSummary.email || '—'}
+                          </p>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3.5">
+                      <div className="flex flex-col gap-1">
+                        <span
+                          className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-1 rounded-full w-fit"
+                          style={{
+                            background: 'color-mix(in srgb, var(--blue) 15%, transparent)',
+                            color: 'var(--blue)'
+                          }}
+                        >
+                          <History size={10} /> Draft
+                        </span>
+                        <span className="text-[10px]" style={{ color: 'var(--label-tertiary)' }}>
+                          {draftSummary.submitted && draftSummary.questionCount > 0
+                            ? `${draftSummary.questionCount} questions ready · send invite`
+                            : stepLabel[draftSummary.step] || 'In progress'
+                          }
+                        </span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3.5 hidden md:table-cell">
+                      <span className="text-xs" style={{ color: 'var(--label-quaternary)' }}>—</span>
+                    </td>
+                    <td className="px-4 py-3.5 text-xs hidden lg:table-cell" style={{ color: 'var(--label-tertiary)' }}>
+                      {draftSummary.savedAt ? new Date(draftSummary.savedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}
+                    </td>
+                    <td className="px-4 py-3.5 hidden md:table-cell" />
+                    <td className="px-4 py-3.5">
+                      <button
+                        onClick={() => window.dispatchEvent(new CustomEvent('navigate-view', { detail: { view: 'new' } }))}
+                        className="flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 rounded-lg transition"
+                        style={{
+                          background: 'color-mix(in srgb, var(--blue) 15%, transparent)',
+                          color: 'var(--blue)'
+                        }}
+                        title="Continue creating this candidate"
+                      >
+                        Continue <ContinueIcon size={12} />
+                      </button>
+                    </td>
+                  </tr>
+                )}
                 {pageSessions.map(session => {
                   const score = session.scorecards_ai_interview?.[0]
                   return (

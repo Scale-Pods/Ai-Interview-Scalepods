@@ -2,16 +2,6 @@
   "nodes": [
     {
       "parameters": {
-        "jsCode": "return items.map(item => ({\n  json: {\n    session_id: (item.json.body || item.json).session_id\n  }\n}));"
-      },
-      "id": "46c2bb84-a965-43d0-b307-13a7a7a9ba43",
-      "name": "Prep Score",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [-1104, 2208]
-    },
-    {
-      "parameters": {
         "httpMethod": "POST",
         "path": "score-interview",
         "options": {}
@@ -20,8 +10,18 @@
       "name": "Webhook",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 1,
-      "position": [-1344, 2208],
+      "position": [-1440, 1776],
       "webhookId": "d54e0c24-d773-4ff4-bbbf-04d2f1cc12fa"
+    },
+    {
+      "parameters": {
+        "jsCode": "return items.map(item => ({\n  json: {\n    session_id: (item.json.body || item.json).session_id\n  }\n}));"
+      },
+      "id": "d0258f68-2620-4093-bb90-3982c474c0ea",
+      "name": "Prep Score",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1136, 1776]
     },
     {
       "parameters": {
@@ -29,36 +29,36 @@
       },
       "type": "n8n-nodes-base.merge",
       "typeVersion": 3.2,
-      "position": [-192, 2608],
-      "id": "d84eaab0-df6b-4695-9f9b-9a02185b7d74",
+      "position": [32, 1824],
+      "id": "ffeee0ce-284a-4488-bc6b-7bb9e4bd592c",
       "name": "Merge1"
     },
     {
       "parameters": {
-        "jsCode": "const session = $node[\"Fetch Session1\"].json;\nconst questions = $node[\"Fetch Questions1\"].json;\nconst answers = $node[\"Fetch Answers1\"].json;\nconst proctoring = $node[\"Fetch Proctoring1\"].json;\nconst resume = $node[\"Fetch Resume\"].json;\nconst jd = $node[\"Fetch JD\"].json;\n\nconst questionMap = {};\n(questions.all || []).forEach(q => { questionMap[q.id] = q; });\n\nconst answerList = (answers.all || []).map(a => ({\n  question: questionMap[a.question_id]?.question_text || 'Unknown',\n  answer: a.answer_text || 'No answer provided',\n  type: questionMap[a.question_id]?.question_type || 'technical'\n}));\n\nconst proctoringCount = (proctoring.all || []).length;\n\nreturn [{\n  json: {\n    session_id: session.id,\n    candidate_id: session.candidate_id,\n    answers: answerList,\n    totalQuestions: answerList.length,\n    proctoringEvents: proctoringCount,\n    resumeText: resume?.raw_text || '',\n    jdText: jd?.raw_text || '',\n    scoredAt: new Date().toISOString()\n  }\n}];"
+        "jsCode": "// ─────────────────────────────────────────────────────────────\n// Supabase getAll returns ONE item PER ROW.\n// Use $items() to collect ALL rows from multi-row nodes.\n// ─────────────────────────────────────────────────────────────\n\nconst session = $node[\"Fetch Session1\"]?.json || {};\nconst resume  = $node[\"Fetch Resume\"]?.json    || {};\nconst jd      = $node[\"Fetch JD\"]?.json        || {};\n\nconst questionRows   = ($items(\"Fetch Questions1\") || []).map(i => i.json);\nconst answerRows     = ($items(\"Fetch Answers1\")   || []).map(i => i.json);\nconst proctoringRows = ($items(\"Fetch Proctoring1\") || []).map(i => i.json);\n\n// Build question lookup\nconst questionMap = {};\nquestionRows.forEach(q => { questionMap[q.id] = q; });\n\n// Build answer list for the LLM\nconst answerList = answerRows.map(a => ({\n  question: questionMap[a.question_id]?.question_text || 'Unknown',\n  answer:   a.answer_text || 'No answer provided',\n  type:     questionMap[a.question_id]?.question_type || 'technical'\n}));\n\n// ─── Build structured proctoring summary ───────────────────\nconst criticalEvents = proctoringRows.filter(e => e.severity === 'critical');\nconst warningEvents  = proctoringRows.filter(e => e.severity === 'warning');\n\nconst countByType = {};\nproctoringRows.forEach(e => {\n  countByType[e.event_type] = (countByType[e.event_type] || 0) + 1;\n});\n\n// Risk level based on critical event count\nlet proctoringRisk = 'low';\nif (criticalEvents.length >= 5 || proctoringRows.length >= 20) proctoringRisk = 'high';\nelse if (criticalEvents.length >= 2 || warningEvents.length >= 5) proctoringRisk = 'medium';\n\n// Pick the most notable events (critical first, up to 10)\nconst notableEvents = [\n  ...criticalEvents,\n  ...warningEvents\n].slice(0, 10).map(e => ({\n  type:      e.event_type,\n  severity:  e.severity,\n  timestamp: e.timestamp\n}));\n\nconst proctoringSummary = {\n  total_events:    proctoringRows.length,\n  critical_count:  criticalEvents.length,\n  warning_count:   warningEvents.length,\n  risk_level:      proctoringRisk,\n  by_type:         countByType,\n  notable_events:  notableEvents\n};\n// ────────────────────────────────────────────────────────────\n\nreturn [{\n  json: {\n    session_id:        session.id,\n    candidate_id:      session.candidate_id,\n    answers:           answerList,\n    totalQuestions:    answerList.length,\n    proctoringSummary,\n    resumeText:        resume.raw_text || '',\n    jdText:            jd.raw_text     || '',\n    scoredAt:          new Date().toISOString()\n  }\n}];"
       },
-      "id": "6942297b-cd4f-4795-b3c4-27dfd1c6d514",
+      "id": "c2aaf7c2-9abb-4632-a4a6-18689a3dedc3",
       "name": "Compile Data",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [256, 2624]
+      "position": [480, 1840]
     },
     {
       "parameters": {
         "method": "POST",
-        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "url": " https://api.openai.com/v1/chat/completions",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={\n  \"model\": \"llama-3.3-70b-versatile\",\n  \"messages\": [\n    {\"role\": \"system\", \"content\": \"You are a senior technical recruiter evaluating a candidate's live interview answers against the job description and resume. STRICT SCORING RUBRIC (MANDATORY): 1. NON-ANSWER & REFUSAL PENALTY: Answers like 'I don't know', 'I have to read upon this', 'not sure', or 1-3 word non-responses MUST be scored ZERO (0) for technical & problem solving depth. Do NOT give partial credit or benefit of the doubt for 'honesty'. Candidate performance in the live interview TRUMPS resume claims. 2. REFUSAL SCORE CAPS: If a candidate answers 'I don't know' or refuses 30%+ of questions, technical_score MUST be 0-25, overall_score MUST be 0-25, and recommendation MUST BE strictly 'no_go'. 3. RESUME VS REALITY: If candidate claims a tool on resume but answers 'I don't know' when asked about it in the interview, mark claim status as 'contradicted' with evidence. Return JSON format: { \\\"technical_score\\\": number, \\\"communication_score\\\": number, \\\"problem_solving_score\\\": number, \\\"cultural_fit_score\\\": number, \\\"overall_score\\\": number, \\\"authenticity_score\\\": number, \\\"strengths\\\": string[], \\\"weaknesses\\\": string[], \\\"red_flag_count\\\": number, \\\"red_flags\\\": string[], \\\"recommendation\\\": 'strong_hire' | 'hire' | 'consider' | 'no_go', \\\"ai_rationale\\\": \\\"2-3 sentence overview\\\", \\\"detailed_rationale\\\": \\\"detailed explanation of fit and authenticity findings\\\", \\\"resume_vs_reality\\\": [{ \\\"claim\\\": string, \\\"status\\\": 'verified' | 'suspicious' | 'unverifiable' | 'contradicted', \\\"evidence\\\": string }] }\"},\n    {\"role\": \"user\", \"content\": {{ JSON.stringify(\"Job Description:\\n\" + $json.jdText + \"\\n\\nResume:\\n\" + $json.resumeText + \"\\n\\nAnswers:\\n\" + JSON.stringify($json.answers)) }}}\n  ],\n  \"response_format\": {\"type\": \"json_object\"}\n}",
+        "jsonBody": "={{ \n  JSON.stringify({\n    \"model\": \"gpt-4.1-mini\",\n    \"messages\": [\n      {\n        \"role\": \"system\",\n        \"content\": \"You are a senior technical recruiter evaluating a candidate's live interview answers against the job description and resume. STRICT SCORING RUBRIC (MANDATORY): 1. NON-ANSWER & REFUSAL PENALTY: Answers like 'I don't know', 'I have to read upon this', 'not sure', or 1-3 word non-responses MUST be scored ZERO (0) for technical & problem solving depth. Do NOT give partial credit or benefit of the doubt for 'honesty'. Candidate performance in the live interview TRUMPS resume claims. 2. REFUSAL SCORE CAPS: If a candidate answers 'I don't know' or refuses 30%+ of questions, technical_score MUST be 0-25, overall_score MUST be 0-25, and recommendation MUST BE strictly 'no_go'. 3. RESUME VS REALITY: If candidate claims a tool on resume but answers 'I don't know' when asked about it in the interview, mark claim status as 'contradicted' with evidence. 4. PROCTORING INTEGRITY: You will receive a proctoring_summary containing behavioural integrity signals captured during the interview. Use this as follows: (a) tab_switch / window_blur events suggest the candidate was looking up answers — factor this into authenticity_score and add to red_flags. (b) copy_paste / keyboard_shortcut events are strong signals of cheating — add to red_flags and reduce authenticity_score significantly. (c) face_absent / face_multiple events may indicate an impersonator — note in red_flags and reduce authenticity_score. (d) If proctoring risk_level is 'high', authenticity_score MUST be 0-40 and must be noted in detailed_rationale. (e) If risk_level is 'medium', reduce authenticity_score by up to 20 points and mention in rationale. (f) If risk_level is 'low', proctoring had no significant findings — no penalty needed. Return JSON format: { \\\"technical_score\\\": number, \\\"communication_score\\\": number, \\\"problem_solving_score\\\": number, \\\"cultural_fit_score\\\": number, \\\"overall_score\\\": number, \\\"authenticity_score\\\": number, \\\"strengths\\\": string[], \\\"weaknesses\\\": string[], \\\"red_flag_count\\\": number, \\\"red_flags\\\": string[], \\\"recommendation\\\": \\\"strong_hire\\\" | \\\"hire\\\" | \\\"consider\\\" | \\\"no_go\\\", \\\"ai_rationale\\\": \\\"2-3 sentence overview\\\", \\\"detailed_rationale\\\": \\\"detailed explanation of fit, authenticity, and proctoring findings\\\", \\\"resume_vs_reality\\\": [{ \\\"claim\\\": string, \\\"status\\\": \\\"verified\\\" | \\\"suspicious\\\" | \\\"unverifiable\\\" | \\\"contradicted\\\", \\\"evidence\\\": string }] }\"\n      },\n      {\n        \"role\": \"user\",\n        \"content\": \"Job Description:\\n\" + $json.jdText + \"\\n\\nResume:\\n\" + $json.resumeText + \"\\n\\nProctoring Summary:\\n\" + JSON.stringify($json.proctoringSummary) + \"\\n\\nAnswers:\\n\" + JSON.stringify($json.answers)\n      }\n    ],\n    \"response_format\": { \"type\": \"json_object\" }\n  })\n}}",
         "options": {}
       },
-      "id": "5f685f30-2b19-4656-be36-dd2bc3e4453a",
+      "id": "93cf764d-e295-4d21-835f-cceb4bfa8aea",
       "name": "Score via LLM",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [448, 2624],
+      "position": [672, 1840],
       "credentials": {
         "httpHeaderAuth": {
           "id": "WlHKo4N02BhjQPJK",
@@ -70,23 +70,33 @@
       "parameters": {
         "operation": "update",
         "tableId": "interview_sessions_ai_interview",
-        "fieldsUi": {
-          "fieldValues": [
-            { "fieldId": "status", "fieldValue": "scored" },
-            { "fieldId": "updated_at", "fieldValue": "={{ new Date().toISOString() }}" }
-          ]
-        },
         "filters": {
           "conditions": [
-            { "keyName": "id", "condition": "eq", "keyValue": "={{ $json.session_id }}" }
+            {
+              "keyName": "id",
+              "condition": "eq",
+              "keyValue": "={{ $json.session_id }}"
+            }
+          ]
+        },
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "status",
+              "fieldValue": "completed"
+            },
+            {
+              "fieldId": "updated_at",
+              "fieldValue": "={{ new Date().toISOString() }}"
+            }
           ]
         }
       },
-      "id": "3363aa18-edaa-4d78-a963-77657e6379cf",
+      "id": "360495a4-59a6-414b-bd23-fa1adc4f9937",
       "name": "Update Session Status",
       "type": "n8n-nodes-base.supabase",
       "typeVersion": 1,
-      "position": [1056, 2624],
+      "position": [1280, 1840],
       "credentials": {
         "supabaseApi": {
           "id": "wMaaAewNUY90iUpo",
@@ -97,14 +107,14 @@
     {
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ {\n  session_id: $json.session_id,\n  status: 'scored',\n  overall_score: $node['Extract Score1'].json.overall_score,\n  recommendation: $node['Extract Score1'].json.recommendation\n} }}",
+        "responseBody": "={{ {\n  session_id: $json.session_id,\n  status: 'completed',\n  overall_score: $node['Extract Score1'].json.overall_score,\n  recommendation: $node['Extract Score1'].json.recommendation\n} }}",
         "options": {}
       },
-      "id": "15b94e3a-4e6a-4faa-8a98-9436b12647fb",
+      "id": "69173481-bd32-4013-a5e7-5ed103dff643",
       "name": "Build Response",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1,
-      "position": [1264, 2624]
+      "position": [1488, 1840]
     },
     {
       "parameters": {
@@ -112,15 +122,19 @@
         "tableId": "resumes_ai_interview",
         "filters": {
           "conditions": [
-            { "keyName": "id", "condition": "eq", "keyValue": "={{ $node[\"Fetch Session1\"].json.resume_id }}" }
+            {
+              "keyName": "id",
+              "condition": "eq",
+              "keyValue": "={{ $json.resume_id }}"
+            }
           ]
         }
       },
-      "id": "ac776997-0f77-4e09-89bf-f36a8126d9e0",
+      "id": "6bda2641-a3ed-4021-89c2-b4d11a48ba6b",
       "name": "Fetch Resume",
       "type": "n8n-nodes-base.supabase",
       "typeVersion": 1,
-      "position": [-672, 2816],
+      "position": [-448, 2032],
       "credentials": {
         "supabaseApi": {
           "id": "wMaaAewNUY90iUpo",
@@ -134,15 +148,19 @@
         "tableId": "job_descriptions_ai_interview",
         "filters": {
           "conditions": [
-            { "keyName": "id", "condition": "eq", "keyValue": "={{ $node[\"Fetch Session1\"].json.jd_id }}" }
+            {
+              "keyName": "id",
+              "condition": "eq",
+              "keyValue": "={{ $json.jd_id }}"
+            }
           ]
         }
       },
-      "id": "3174c59d-8c76-4742-b6c9-38a8ccc50768",
+      "id": "fdda587a-0bfa-43d1-850c-5ff159c68090",
       "name": "Fetch JD",
       "type": "n8n-nodes-base.supabase",
       "typeVersion": 1,
-      "position": [-672, 3040],
+      "position": [-448, 2256],
       "credentials": {
         "supabaseApi": {
           "id": "wMaaAewNUY90iUpo",
@@ -156,18 +174,19 @@
         "tableId": "interview_sessions_ai_interview",
         "filters": {
           "conditions": [
-            { "keyName": "id", "condition": "eq", "keyValue": "={{ $json.session_id }}" }
+            {
+              "keyName": "id",
+              "condition": "eq",
+              "keyValue": "={{ $json.session_id }}"
+            }
           ]
-        },
-        "options": {
-          "selectFields": ["id", "candidate_id", "status", "created_at", "resume_id", "jd_id"]
         }
       },
-      "id": "898f4735-8e83-40ac-b0f1-2978f7554001",
+      "id": "aa499589-a884-40fc-9b04-b211ee59552c",
       "name": "Fetch Session1",
       "type": "n8n-nodes-base.supabase",
       "typeVersion": 1,
-      "position": [-864, 2208],
+      "position": [-912, 2016],
       "credentials": {
         "supabaseApi": {
           "id": "wMaaAewNUY90iUpo",
@@ -181,37 +200,19 @@
         "tableId": "interview_questions_ai_interview",
         "filters": {
           "conditions": [
-            { "keyName": "session_id", "condition": "eq", "keyValue": "={{ $json.session_id }}" }
+            {
+              "keyName": "session_id",
+              "condition": "eq",
+              "keyValue": "={{ $json.session_id }}"
+            }
           ]
         }
       },
-      "id": "8c8c884d-a94f-467a-a589-ebf4398f4a59",
+      "id": "aa5d9936-14ee-4aa4-bc5b-72931bef945b",
       "name": "Fetch Questions1",
       "type": "n8n-nodes-base.supabase",
       "typeVersion": 1,
-      "position": [-672, 2208],
-      "credentials": {
-        "supabaseApi": {
-          "id": "wMaaAewNUY90iUpo",
-          "name": "Supabase account 2"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "operation": "getAll",
-        "tableId": "proctoring_events_ai_interview",
-        "filters": {
-          "conditions": [
-            { "keyName": "session_id", "condition": "eq", "keyValue": "={{ $json.session_id }}" }
-          ]
-        }
-      },
-      "id": "cd66b7d4-1f22-438a-ad3f-b2449a815fb3",
-      "name": "Fetch Proctoring1",
-      "type": "n8n-nodes-base.supabase",
-      "typeVersion": 1,
-      "position": [-672, 2416],
+      "position": [-448, 1424],
       "credentials": {
         "supabaseApi": {
           "id": "wMaaAewNUY90iUpo",
@@ -225,15 +226,19 @@
         "tableId": "interview_answers_ai_interview",
         "filters": {
           "conditions": [
-            { "keyName": "session_id", "condition": "eq", "keyValue": "={{ $json.session_id }}" }
+            {
+              "keyName": "session_id",
+              "condition": "eq",
+              "keyValue": "={{ $json.session_id }}"
+            }
           ]
         }
       },
-      "id": "5343c653-863b-44ce-ad4a-c976c107b01e",
+      "id": "8d616418-d7e3-402b-8edc-09ba6815ecea",
       "name": "Fetch Answers1",
       "type": "n8n-nodes-base.supabase",
       "typeVersion": 1,
-      "position": [-672, 2608],
+      "position": [-448, 1824],
       "credentials": {
         "supabaseApi": {
           "id": "wMaaAewNUY90iUpo",
@@ -243,107 +248,340 @@
     },
     {
       "parameters": {
-        "jsCode": "const content = JSON.parse($json.choices[0].message.content);\nconst compileData = $node[\"Compile Data\"].json;\n\nreturn [{\n  json: {\n    session_id: compileData.session_id,\n    technical_score: content.technical_score || 0,\n    communication_score: content.communication_score || 0,\n    problem_solving_score: content.problem_solving_score || 0,\n    cultural_fit_score: content.cultural_fit_score || 0,\n    overall_score: content.overall_score || 0,\n    authenticity_score: content.authenticity_score || 0,\n    red_flag_count: content.red_flag_count || 0,\n    red_flags: content.red_flags || [],\n    resume_vs_reality: content.resume_vs_reality || [],\n    strengths: content.strengths || [],\n    weaknesses: content.weaknesses || [],\n    recommendation: content.recommendation || 'consider',\n    ai_rationale: content.ai_rationale || '',\n    detailed_rationale: content.detailed_rationale || '',\n    scoring_model_version: 'llama-3.3-70b-versatile-v2',\n    evaluated_at: new Date().toISOString()\n  }\n}];"
+        "jsCode": "const content = JSON.parse($json.choices[0].message.content);\nconst compileData = $node[\"Compile Data\"] ? $node[\"Compile Data\"].json : ($node[\"Build Prompt\"] ? $node[\"Build Prompt\"].json : {});\nconst answers = compileData.answers || [];\n\n// Identify \"I don't know\" and non-answer responses\nconst isRefusal = (ans) => {\n  const clean = (ans || '').toLowerCase().trim();\n  return (\n    clean.length === 0 ||\n    clean === 'no answer recorded' ||\n    clean.includes(\"i don't know\") ||\n    clean.includes(\"dont know\") ||\n    clean.includes(\"do not know\") ||\n    clean.includes(\"read upon this\") ||\n    clean.includes(\"have to read\") ||\n    clean.includes(\"not sure\") ||\n    clean.includes(\"no idea\")\n  );\n};\n\nconst refusalCount = answers.filter(a => isRefusal(a.answer)).length;\nconst totalAnswers = Math.max(1, answers.length);\nconst refusalRate = refusalCount / totalAnswers;\n\nlet technical_score = content.technical_score ?? 0;\nlet communication_score = content.communication_score ?? 0;\nlet problem_solving_score = content.problem_solving_score ?? 0;\nlet cultural_fit_score = content.cultural_fit_score ?? 0;\nlet overall_score = content.overall_score ?? 0;\nlet authenticity_score = content.authenticity_score ?? 0;\nlet recommendation = content.recommendation || 'consider';\n\n// Enforce refusal score caps (clamping scores if refusal rate >= 30%)\nif (refusalRate >= 0.5) {\n  technical_score = Math.min(technical_score, 15);\n  problem_solving_score = Math.min(problem_solving_score, 15);\n  overall_score = Math.min(overall_score, 15);\n  recommendation = 'no_go';\n} else if (refusalRate >= 0.3) {\n  technical_score = Math.min(technical_score, 30);\n  problem_solving_score = Math.min(problem_solving_score, 30);\n  overall_score = Math.min(overall_score, 30);\n  recommendation = 'no_go';\n}\n\nreturn [{\n  json: {\n    session_id: compileData.session_id,\n    technical_score,\n    communication_score,\n    problem_solving_score,\n    cultural_fit_score,\n    overall_score,\n    authenticity_score,\n    red_flag_count: content.red_flag_count ?? 0,\n    red_flags: content.red_flags || [],\n    resume_vs_reality: content.resume_vs_reality || [],\n    strengths: content.strengths || [],\n    weaknesses: content.weaknesses || [],\n    recommendation,\n    ai_rationale: content.ai_rationale || '',\n    detailed_rationale: content.detailed_rationale || '',\n    scoring_model_version: 'gpt-4.1-mini-v1',\n    evaluated_at: new Date().toISOString()\n  }\n}];\n"
       },
-      "id": "4a3b694d-e50f-4cba-883d-0fb90e0828c2",
+      "id": "db577766-993b-4bb5-bfdd-ec909d6c7ef5",
       "name": "Extract Score1",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [656, 2624]
+      "position": [880, 1840]
     },
     {
       "parameters": {
         "tableId": "scorecards_ai_interview",
         "fieldsUi": {
           "fieldValues": [
-            { "fieldId": "session_id", "fieldValue": "={{ $json.session_id }}" },
-            { "fieldId": "technical_score", "fieldValue": "={{ $json.technical_score }}" },
-            { "fieldId": "communication_score", "fieldValue": "={{ $json.communication_score }}" },
-            { "fieldId": "problem_solving_score", "fieldValue": "={{ $json.problem_solving_score }}" },
-            { "fieldId": "cultural_fit_score", "fieldValue": "={{ $json.cultural_fit_score }}" },
-            { "fieldId": "overall_score", "fieldValue": "={{ $json.overall_score }}" },
-            { "fieldId": "authenticity_score", "fieldValue": "={{ $json.authenticity_score }}" },
-            { "fieldId": "red_flag_count", "fieldValue": "={{ $json.red_flag_count }}" },
-            { "fieldId": "red_flags", "fieldValue": "={{ $json.red_flags }}" },
-            { "fieldId": "resume_vs_reality", "fieldValue": "={{ $json.resume_vs_reality }}" },
-            { "fieldId": "live_notes", "fieldValue": "={{ $json.live_notes }}" },
-            { "fieldId": "strengths", "fieldValue": "={{ $json.strengths }}" },
-            { "fieldId": "weaknesses", "fieldValue": "={{ $json.weaknesses }}" },
-            { "fieldId": "recommendation", "fieldValue": "={{ $json.recommendation }}" },
-            { "fieldId": "ai_rationale", "fieldValue": "={{ $json.ai_rationale }}" },
-            { "fieldId": "detailed_rationale", "fieldValue": "={{ $json.detailed_rationale }}" },
-            { "fieldId": "scoring_model_version", "fieldValue": "={{ $json.scoring_model_version }}" },
-            { "fieldId": "evaluated_at", "fieldValue": "={{ $json.evaluated_at }}" }
+            {
+              "fieldId": "session_id",
+              "fieldValue": "={{ $json.session_id }}"
+            },
+            {
+              "fieldId": "technical_score",
+              "fieldValue": "={{ $json.technical_score }}"
+            },
+            {
+              "fieldId": "communication_score",
+              "fieldValue": "={{ $json.communication_score }}"
+            },
+            {
+              "fieldId": "problem_solving_score",
+              "fieldValue": "={{ $json.problem_solving_score }}"
+            },
+            {
+              "fieldId": "cultural_fit_score",
+              "fieldValue": "={{ $json.cultural_fit_score }}"
+            },
+            {
+              "fieldId": "overall_score",
+              "fieldValue": "={{ $json.overall_score }}"
+            },
+            {
+              "fieldId": "authenticity_score",
+              "fieldValue": "={{ $json.authenticity_score }}"
+            },
+            {
+              "fieldId": "red_flag_count",
+              "fieldValue": "={{ $json.red_flag_count }}"
+            },
+            {
+              "fieldId": "red_flags",
+              "fieldValue": "={{ $json.red_flags }}"
+            },
+            {
+              "fieldId": "resume_vs_reality",
+              "fieldValue": "={{ $json.resume_vs_reality }}"
+            },
+            {
+              "fieldId": "strengths",
+              "fieldValue": "={{ $json.strengths }}"
+            },
+            {
+              "fieldId": "weaknesses",
+              "fieldValue": "={{ $json.weaknesses }}"
+            },
+            {
+              "fieldId": "recommendation",
+              "fieldValue": "={{ $json.recommendation }}"
+            },
+            {
+              "fieldId": "ai_rationale",
+              "fieldValue": "={{ $json.ai_rationale }}"
+            },
+            {
+              "fieldId": "detailed_rationale",
+              "fieldValue": "={{ $json.detailed_rationale }}"
+            },
+            {
+              "fieldId": "scoring_model_version",
+              "fieldValue": "={{ $json.scoring_model_version }}"
+            },
+            {
+              "fieldId": "evaluated_at",
+              "fieldValue": "={{ $json.evaluated_at }}"
+            },
+            {
+              "fieldId": "live_notes",
+              "fieldValue": "={{ $json.live_notes }}"
+            }
           ]
         }
       },
-      "id": "aafc4526-d8a7-4cd1-b9b7-a18cd4a8c5e8",
+      "id": "233efff8-874c-4bce-a01c-ca33feb0465d",
       "name": "Store Scorecard1",
       "type": "n8n-nodes-base.supabase",
       "typeVersion": 1,
-      "position": [864, 2624],
+      "position": [1088, 1840],
       "credentials": {
         "supabaseApi": {
           "id": "wMaaAewNUY90iUpo",
           "name": "Supabase account 2"
         }
       }
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "proctoring_events_ai_interview",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "session_id",
+              "condition": "eq",
+              "keyValue": "={{ $json.session_id }}"
+            }
+          ]
+        }
+      },
+      "id": "b1aaaea0-c5fe-45bd-830b-18b6e9f7e615",
+      "name": "Fetch Proctoring1",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [-608, 1664],
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseApi": {
+          "id": "wMaaAewNUY90iUpo",
+          "name": "Supabase account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "if (items.length === 0) {\n  return [{ json: { all: [] } }];\n}\nreturn items;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-384, 1664],
+      "id": "a1833270-adc3-42fb-9114-0fcc22775e66",
+      "name": "Code in JavaScript",
+      "executeOnce": false
     }
   ],
   "connections": {
     "Webhook": {
-      "main": [[{ "node": "Prep Score", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Prep Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Prep Score": {
-      "main": [[
-        { "node": "Fetch Session1", "type": "main", "index": 0 },
-        { "node": "Fetch Questions1", "type": "main", "index": 0 },
-        { "node": "Fetch Proctoring1", "type": "main", "index": 0 },
-        { "node": "Fetch Answers1", "type": "main", "index": 0 }
-      ]]
-    },
-    "Fetch Session1": {
-      "main": [[
-        { "node": "Fetch Resume", "type": "main", "index": 0 },
-        { "node": "Fetch JD", "type": "main", "index": 0 },
-        { "node": "Merge1", "type": "main", "index": 0 }
-      ]]
-    },
-    "Fetch Questions1": {
-      "main": [[{ "node": "Merge1", "type": "main", "index": 1 }]]
-    },
-    "Fetch Proctoring1": {
-      "main": [[{ "node": "Merge1", "type": "main", "index": 2 }]]
-    },
-    "Fetch Answers1": {
-      "main": [[{ "node": "Merge1", "type": "main", "index": 3 }]]
-    },
-    "Fetch Resume": {
-      "main": [[{ "node": "Merge1", "type": "main", "index": 4 }]]
-    },
-    "Fetch JD": {
-      "main": [[{ "node": "Merge1", "type": "main", "index": 5 }]]
+      "main": [
+        [
+          {
+            "node": "Fetch Session1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch Questions1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch Answers1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch Proctoring1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Merge1": {
-      "main": [[{ "node": "Compile Data", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Compile Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Compile Data": {
-      "main": [[{ "node": "Score via LLM", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Score via LLM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Score via LLM": {
-      "main": [[{ "node": "Extract Score1", "type": "main", "index": 0 }]]
-    },
-    "Extract Score1": {
-      "main": [[
-        { "node": "Store Scorecard1", "type": "main", "index": 0 },
-        { "node": "Update Session Status", "type": "main", "index": 0 }
-      ]]
-    },
-    "Store Scorecard1": {
-      "main": [[{ "node": "Build Response", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Extract Score1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Update Session Status": {
-      "main": [[{ "node": "Build Response", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Resume": {
+      "main": [
+        [
+          {
+            "node": "Merge1",
+            "type": "main",
+            "index": 4
+          }
+        ]
+      ]
+    },
+    "Fetch JD": {
+      "main": [
+        [
+          {
+            "node": "Merge1",
+            "type": "main",
+            "index": 5
+          }
+        ]
+      ]
+    },
+    "Fetch Session1": {
+      "main": [
+        [
+          {
+            "node": "Fetch Resume",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch JD",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Questions1": {
+      "main": [
+        [
+          {
+            "node": "Merge1",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Fetch Answers1": {
+      "main": [
+        [
+          {
+            "node": "Merge1",
+            "type": "main",
+            "index": 3
+          }
+        ]
+      ]
+    },
+    "Extract Score1": {
+      "main": [
+        [
+          {
+            "node": "Store Scorecard1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Update Session Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Scorecard1": {
+      "main": [
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Proctoring1": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Merge1",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
     }
   },
   "pinData": {},

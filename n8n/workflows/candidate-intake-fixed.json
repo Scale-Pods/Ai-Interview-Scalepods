@@ -1,46 +1,42 @@
 {
-  "name": "AI Interviewer - Candidate Intake",
   "nodes": [
     {
       "parameters": {
-        "httpMethod": "POST",
-        "path": "candidate-intake",
-        "options": {
-          "responseMode": "responseNode"
-        }
+        "jsCode": "return items.map(item => {\n  const { name, email, jobName, jobDescription, resume } = item.json.body || {};\n  const missingFields = [];\n  if (!name) missingFields.push('name');\n  if (!email) missingFields.push('email');\n  if (!jobDescription) missingFields.push('jobDescription');\n  if (!resume) missingFields.push('resume');\n  if (missingFields.length > 0) {\n    throw new Error(`Missing required fields inside body: ${missingFields.join(', ')}`);\n  }\n  return { json: { name, email, jobName: jobName || '', jobDescription, resume } };\n});"
       },
-      "id": "a21d9c3c-2f5e-4f31-969a-ef59d7001ab2",
-      "name": "Webhook",
-      "type": "n8n-nodes-base.webhook",
-      "typeVersion": 1,
-      "position": [240, 300],
-      "webhookId": "36e4a038-59ab-444f-85e8-d93ecd377cd9"
-    },
-    {
-      "parameters": {
-        "jsCode": "return items.map(item => {\n  const { name, email, jobDescription, resume } = item.json.body || {};\n  const missingFields = [];\n  if (!name) missingFields.push('name');\n  if (!email) missingFields.push('email');\n  if (!jobDescription) missingFields.push('jobDescription');\n  if (!resume) missingFields.push('resume');\n  if (missingFields.length > 0) {\n    throw new Error(`Missing required fields inside body: ${missingFields.join(', ')}`);\n  }\n  return { json: { name, email, jobDescription, resume } };\n});"
-      },
-      "id": "8daa477e-9a70-4a31-a2ab-92c0b45dc908",
+      "id": "8c0dafce-86ce-45b8-a5e0-96c0d2dbbc06",
       "name": "Validate Inputs",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [432, 300]
+      "position": [
+        -912,
+        -96
+      ]
     },
     {
       "parameters": {
         "tableId": "candidates_ai_interview",
         "fieldsUi": {
           "fieldValues": [
-            { "fieldId": "name", "fieldValue": "={{ $node[\"Validate Inputs\"].json.name }}" },
-            { "fieldId": "email", "fieldValue": "={{ $node[\"Validate Inputs\"].json.email }}" }
+            {
+              "fieldId": "name",
+              "fieldValue": "={{ $node[\"Validate Inputs\"].json.name }}"
+            },
+            {
+              "fieldId": "email",
+              "fieldValue": "={{ $node[\"Validate Inputs\"].json.email }}"
+            }
           ]
         }
       },
-      "id": "38374168-5611-415c-a8a1-d48e2d7536cb",
+      "id": "1d4b6a38-2fc1-4515-b65a-e0d51e75c669",
       "name": "Store Candidate",
       "type": "n8n-nodes-base.supabase",
       "typeVersion": 1,
-      "position": [624, 300],
+      "position": [
+        -720,
+        -96
+      ],
       "credentials": {
         "supabaseApi": {
           "id": "wMaaAewNUY90iUpo",
@@ -51,19 +47,22 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "url": " https://api.openai.com/v1/chat/completions",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={\n  \"model\": \"llama-3.3-70b-versatile\",\n  \"messages\": [\n    {\"role\": \"system\", \"content\": \"Extract structured data from this job description. Return JSON only: { skills: string[], yearsExperience: number, roles: string[], summary: string }\"},\n    {\"role\": \"user\", \"content\": {{ JSON.stringify($json.jobDescription) }}}\n  ],\n  \"response_format\": {\"type\": \"json_object\"}\n}",
+        "jsonBody": "={{\n  {\n    \"model\": \"gpt-4.1-mini\",\n    \"messages\": [\n      {\n        \"role\": \"system\",\n        \"content\": \"Extract structured data from this job description. Return JSON only: { \\\"skills\\\": string[], \\\"yearsExperience\\\": number, \\\"roles\\\": string[], \\\"summary\\\": string }\"\n      },\n      {\n        \"role\": \"user\",\n        \"content\": $node[\"Validate Inputs\"].json.jobDescription\n      }\n    ],\n    \"response_format\": { \"type\": \"json_object\" }\n  }\n}}",
         "options": {}
       },
-      "id": "110c6acb-cce0-4a49-a894-0382e44fe301",
+      "id": "7942963c-f665-4754-9eb3-172f68e1593b",
       "name": "Parse JD",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [816, 100],
+      "position": [
+        -528,
+        -304
+      ],
       "credentials": {
         "httpHeaderAuth": {
           "id": "WlHKo4N02BhjQPJK",
@@ -75,30 +74,55 @@
       "parameters": {
         "jsCode": "return items.map(item => {\n  const content = JSON.parse(item.json.choices[0].message.content);\n  return {\n    json: {\n      skills: Array.isArray(content.skills) ? content.skills : [],\n      yearsExperience: typeof content.yearsExperience === 'number' ? content.yearsExperience : 0,\n      roles: Array.isArray(content.roles) ? content.roles : []\n    }\n  };\n});"
       },
-      "id": "8e50f151-15a3-4d87-833f-53b4eb28b40c",
+      "id": "00e01db4-c41d-4f38-bf62-40afc020c2e1",
       "name": "Extract JD",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1008, 100]
+      "position": [
+        -336,
+        -304
+      ]
     },
     {
       "parameters": {
         "tableId": "job_descriptions_ai_interview",
         "fieldsUi": {
           "fieldValues": [
-            { "fieldId": "candidate_id", "fieldValue": "={{ $node[\"Store Candidate\"].json.id }}" },
-            { "fieldId": "raw_text", "fieldValue": "={{ $node[\"Validate Inputs\"].json.jobDescription }}" },
-            { "fieldId": "parsed_skills", "fieldValue": "={{ $json.skills }}" },
-            { "fieldId": "parsed_years_experience", "fieldValue": "={{ $json.yearsExperience }}" },
-            { "fieldId": "parsed_roles", "fieldValue": "={{ $json.roles }}" }
+            {
+              "fieldId": "candidate_id",
+              "fieldValue": "={{ $node[\"Store Candidate\"].json.id }}"
+            },
+            {
+              "fieldId": "job_name",
+              "fieldValue": "={{ $node[\"Validate Inputs\"].json.jobName }}"
+            },
+            {
+              "fieldId": "raw_text",
+              "fieldValue": "={{ $node[\"Validate Inputs\"].json.jobDescription }}"
+            },
+            {
+              "fieldId": "parsed_skills",
+              "fieldValue": "={{ $json.skills }}"
+            },
+            {
+              "fieldId": "parsed_years_experience",
+              "fieldValue": "={{ $json.yearsExperience }}"
+            },
+            {
+              "fieldId": "parsed_roles",
+              "fieldValue": "={{ $json.roles }}"
+            }
           ]
         }
       },
-      "id": "6a51c8ad-aa74-4206-ab36-3ba054c4be03",
+      "id": "ef410d0b-dcd0-480e-a411-c49debd07766",
       "name": "Store JD",
       "type": "n8n-nodes-base.supabase",
       "typeVersion": 1,
-      "position": [1200, 100],
+      "position": [
+        -144,
+        -304
+      ],
       "credentials": {
         "supabaseApi": {
           "id": "wMaaAewNUY90iUpo",
@@ -109,19 +133,22 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "url": "https://api.openai.com/v1/chat/completions",
         "authentication": "genericCredentialType",
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={\n  \"model\": \"llama-3.3-70b-versatile\",\n  \"messages\": [\n    {\"role\": \"system\", \"content\": \"Extract structured data from this resume. Return JSON only: { skills: string[], experience: [{ title: string, company: string, duration: string, highlights: string[] }], education: [{ degree: string, institution: string, year: string }] }\"},\n    {\"role\": \"user\", \"content\": {{ JSON.stringify($json.resume) }}}\n  ],\n  \"response_format\": {\"type\": \"json_object\"}\n}",
+        "jsonBody": "={{\n  {\n    \"model\": \"gpt-4.1-mini\",\n    \"messages\": [\n      {\n        \"role\": \"system\",\n        \"content\": \"Extract structured data from this resume. Return JSON only: { \\\"skills\\\": string[], \\\"experience\\\": [{ \\\"title\\\": string, \\\"company\\\": string, \\\"duration\\\": string, \\\"highlights\\\": string[] }], \\\"education\\\": [{ \\\"degree\\\": string, \\\"institution\\\": string, \\\"year\\\": string }] }\"\n      },\n      {\n        \"role\": \"user\",\n        \"content\": $node[\"Validate Inputs\"].json.resume\n      }\n    ],\n    \"response_format\": { \"type\": \"json_object\" }\n  }\n}}",
         "options": {}
       },
-      "id": "d8e3d02f-d0ec-4920-9449-8489203f7600",
+      "id": "9d33b554-01bb-4774-afff-774711f2b34f",
       "name": "Parse Resume",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [816, 500],
+      "position": [
+        -528,
+        96
+      ],
       "credentials": {
         "httpHeaderAuth": {
           "id": "WlHKo4N02BhjQPJK",
@@ -133,30 +160,51 @@
       "parameters": {
         "jsCode": "return items.map(item => {\n  const content = JSON.parse(item.json.choices[0].message.content);\n  return {\n    json: {\n      skills: Array.isArray(content.skills) ? content.skills : [],\n      experience: Array.isArray(content.experience) ? content.experience : [],\n      education: Array.isArray(content.education) ? content.education : []\n    }\n  };\n});"
       },
-      "id": "8e973301-3dd1-402b-9f66-7387890e62ac",
+      "id": "a38091fb-c2f3-4563-b616-1a46d997d8ce",
       "name": "Extract Resume",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1008, 500]
+      "position": [
+        -336,
+        96
+      ]
     },
     {
       "parameters": {
         "tableId": "resumes_ai_interview",
         "fieldsUi": {
           "fieldValues": [
-            { "fieldId": "candidate_id", "fieldValue": "={{ $node[\"Store Candidate\"].json.id }}" },
-            { "fieldId": "raw_text", "fieldValue": "={{ $node[\"Validate Inputs\"].json.resume }}" },
-            { "fieldId": "parsed_skills", "fieldValue": "={{ $json.skills }}" },
-            { "fieldId": "parsed_experience", "fieldValue": "={{ $json.experience }}" },
-            { "fieldId": "parsed_education", "fieldValue": "={{ $json.education }}" }
+            {
+              "fieldId": "candidate_id",
+              "fieldValue": "={{ $node[\"Store Candidate\"].json.id }}"
+            },
+            {
+              "fieldId": "raw_text",
+              "fieldValue": "={{ $node[\"Validate Inputs\"].json.resume }}"
+            },
+            {
+              "fieldId": "parsed_skills",
+              "fieldValue": "={{ $json.skills }}"
+            },
+            {
+              "fieldId": "parsed_experience",
+              "fieldValue": "={{ $json.experience }}"
+            },
+            {
+              "fieldId": "parsed_education",
+              "fieldValue": "={{ $json.education }}"
+            }
           ]
         }
       },
-      "id": "22937c81-e96f-417d-9786-355c53f0ac65",
+      "id": "dc6c7830-eb7d-4320-9122-327b989acd18",
       "name": "Store Resume",
       "type": "n8n-nodes-base.supabase",
       "typeVersion": 1,
-      "position": [1200, 500],
+      "position": [
+        -144,
+        96
+      ],
       "credentials": {
         "supabaseApi": {
           "id": "wMaaAewNUY90iUpo",
@@ -166,32 +214,70 @@
     },
     {
       "parameters": {
-        "jsCode": "return items.map(item => ({\n  json: {\n    actor_type: 'system',\n    action: 'candidate_intake_complete',\n    resource_type: 'candidates_ai_interview',\n    resource_id: $node[\"Store Candidate\"].json.id,\n    details: { email: $node[\"Validate Inputs\"].json.email }\n  }\n}));"
+        "jsCode": "return items.map(item => ({\n  json: {\n    actor_type: 'system',\n    action: 'candidate_intake_complete',\n    resource_type: 'candidates',\n    resource_id: $node[\"Store Candidate\"].json.id,\n    details: { email: $node[\"Validate Inputs\"].json.email }\n  }\n}));"
       },
-      "id": "a1b2c3d4-e5f6-7890-abcd-ef0123456789",
+      "id": "66c4e601-59a4-4cdb-bfb0-7d14a075fe62",
       "name": "Prepare Audit",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [1392, 500]
+      "position": [
+        48,
+        96
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "candidate-intake",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "1d3929c7-d146-425c-a0c7-abfb33ed53fb",
+      "name": "Webhook1",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        -1104,
+        -96
+      ],
+      "webhookId": "36e4a038-59ab-444f-85e8-d93ecd377cd9"
     },
     {
       "parameters": {
         "tableId": "audit_log_ai_interview",
         "fieldsUi": {
           "fieldValues": [
-            { "fieldId": "actor_type", "fieldValue": "={{ $json.actor_type }}" },
-            { "fieldId": "action", "fieldValue": "={{ $json.action }}" },
-            { "fieldId": "resource_type", "fieldValue": "={{ $json.resource_type }}" },
-            { "fieldId": "resource_id", "fieldValue": "={{ $json.resource_id }}" },
-            { "fieldId": "details", "fieldValue": "={{ $json.details }}" }
+            {
+              "fieldId": "actor_type",
+              "fieldValue": "={{ $json.actor_type }}"
+            },
+            {
+              "fieldId": "action",
+              "fieldValue": "={{ $json.action }}"
+            },
+            {
+              "fieldId": "resource_type",
+              "fieldValue": "={{ $json.resource_type }}"
+            },
+            {
+              "fieldId": "resource_id",
+              "fieldValue": "={{ $json.resource_id }}"
+            },
+            {
+              "fieldId": "details",
+              "fieldValue": "={{ $json.details }}"
+            }
           ]
         }
       },
-      "id": "2da96625-d019-4fc0-afc3-d9541273217f",
-      "name": "Audit Log",
+      "id": "861c3a16-ced2-4e12-a1e1-a9109c1235c6",
+      "name": "Audit Log1",
       "type": "n8n-nodes-base.supabase",
       "typeVersion": 1,
-      "position": [1584, 500],
+      "position": [
+        240,
+        96
+      ],
       "credentials": {
         "supabaseApi": {
           "id": "wMaaAewNUY90iUpo",
@@ -202,51 +288,172 @@
     {
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ {\n  candidate_id: $node['Store Candidate'].json.id,\n  jd_id: $node['Store JD'].json.id,\n  resume_id: $node['Store Resume'].json.id,\n  name: $node['Validate Inputs'].json.name,\n  email: $node['Validate Inputs'].json.email\n} }}"
+        "responseBody": "={{ {\n  candidate_id: $node['Store Candidate'].json.id,\n  jd_id: $node['Store JD'].json.id,\n  resume_id: $node['Store Resume'].json.id,\n  name: $node['Validate Inputs'].json.name,\n  email: $node['Validate Inputs'].json.email\n} }}",
+        "options": {}
       },
-      "id": "resp-candidate-intake-001",
-      "name": "Build Response",
+      "id": "6f2bb098-4757-4be3-a2a3-f4c25a3c03a6",
+      "name": "Build Response1",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1,
-      "position": [1776, 500]
+      "position": [
+        864,
+        -96
+      ]
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        512,
+        -96
+      ],
+      "id": "903c42a9-5cbe-4724-a1c3-3e2a04c98d9b",
+      "name": "Merge"
     }
   ],
   "connections": {
-    "Webhook": {
-      "main": [[{ "node": "Validate Inputs", "type": "main", "index": 0 }]]
-    },
     "Validate Inputs": {
-      "main": [[{ "node": "Store Candidate", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Store Candidate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Store Candidate": {
-      "main": [[
-        { "node": "Parse JD", "type": "main", "index": 0 },
-        { "node": "Parse Resume", "type": "main", "index": 0 }
-      ]]
+      "main": [
+        [
+          {
+            "node": "Parse JD",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Parse Resume",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Parse JD": {
-      "main": [[{ "node": "Extract JD", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Extract JD",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Extract JD": {
-      "main": [[{ "node": "Store JD", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Store JD",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Store JD": {
-      "main": [[{ "node": "Build Response", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Parse Resume": {
-      "main": [[{ "node": "Extract Resume", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Extract Resume",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Extract Resume": {
-      "main": [[{ "node": "Store Resume", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Store Resume",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Store Resume": {
-      "main": [[{ "node": "Prepare Audit", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Prepare Audit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Prepare Audit": {
-      "main": [[{ "node": "Audit Log", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Audit Log1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
-    "Audit Log": {
-      "main": [[{ "node": "Build Response", "type": "main", "index": 0 }]]
+    "Webhook1": {
+      "main": [
+        [
+          {
+            "node": "Validate Inputs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Audit Log1": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Build Response1": {
+      "main": [
+        []
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Build Response1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "pinData": {},
