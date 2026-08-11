@@ -51,8 +51,13 @@ export function useProctoring(sessionId: string) {
     severity: ProctoringSeverity,
     payload?: Record<string, unknown>
   ) => {
+    // Do not emit events after proctoring has been stopped
+    if (isStoppingRef.current) return
     const activeSessionId = activeSessionIdRef.current || sessionId
-    if (!activeSessionId) return
+    if (!activeSessionId) {
+      console.warn('[Proctoring] emitEvent called with no active sessionId — event dropped:', eventType)
+      return
+    }
 
     const event: Omit<ProctoringEvent, 'id' | 'timestamp'> = {
       session_id: activeSessionId,
@@ -75,7 +80,9 @@ export function useProctoring(sessionId: string) {
           severity,
           payload
         })
-    } catch {}
+    } catch (err) {
+      console.warn('[Proctoring] Failed to save event to Supabase:', err)
+    }
   }, [sessionId])
 
   // Explicit activation action — accepts optional shared audio stream
@@ -88,8 +95,12 @@ export function useProctoring(sessionId: string) {
     }
     setIsActive(true)
     try {
-      if (!document.fullscreenElement) {
-        await document.documentElement.requestFullscreen()
+      const doc = document as any
+      const fullElem = doc.fullscreenElement || doc.webkitFullscreenElement || doc.mozFullScreenElement
+      if (!fullElem) {
+        const elem = doc.documentElement
+        const req = elem.requestFullscreen || elem.webkitRequestFullscreen || elem.mozRequestFullScreen || elem.msRequestFullscreen
+        if (req) await req.call(elem).catch(() => {})
       }
     } catch (err) {
       console.warn("Fullscreen request failed:", err)
@@ -108,8 +119,11 @@ export function useProctoring(sessionId: string) {
     }
     closeAudioContext(audioContextRef)
     
-    if (document.fullscreenElement) {
-      document.exitFullscreen().catch(() => {})
+    const doc = document as any
+    const fullElem = doc.fullscreenElement || doc.webkitFullscreenElement || doc.mozFullScreenElement
+    if (fullElem) {
+      const exit = doc.exitFullscreen || doc.webkitExitFullscreen || doc.mozCancelFullScreen || doc.msExitFullscreen
+      if (exit) exit.call(doc).catch(() => {})
     }
   }, [])
 
@@ -121,7 +135,18 @@ export function useProctoring(sessionId: string) {
     const handleVisibility = () => {
       if (document.hidden) emitEvent('tab_switch', 'warning')
     }
-    const handleBlur = () => emitEvent('window_blur', 'warning')
+
+    // Debounce window_blur — 50ms ensures Alt-Tab or clicking outside window fires immediately
+    let blurTimer: ReturnType<typeof setTimeout> | null = null
+    const handleBlur = () => {
+      if (blurTimer) clearTimeout(blurTimer)
+      blurTimer = setTimeout(() => {
+        if (!document.hasFocus()) emitEvent('window_blur', 'warning')
+      }, 50)
+    }
+    const handleFocus = () => {
+      if (blurTimer) clearTimeout(blurTimer)
+    }
     
     let lastWidth = window.innerWidth
     const handleResize = () => {
@@ -150,23 +175,108 @@ export function useProctoring(sessionId: string) {
     }
 
     // 4. Clipboard Blocks
-    const handleCopy = (e: Event) => { e.preventDefault(); emitEvent('copy_paste', 'info', { action: 'copy' }) }
-    const handlePaste = (e: Event) => { e.preventDefault(); emitEvent('copy_paste', 'info', { action: 'paste' }) }
-    const handleCut = (e: Event) => { e.preventDefault(); emitEvent('copy_paste', 'info', { action: 'cut' }) }
+    const handleCopy = (e: Event) => { e.preventDefault(); emitEvent('copy_paste', 'warning', { action: 'copy' }) }
+    const handlePaste = (e: Event) => { e.preventDefault(); emitEvent('copy_paste', 'warning', { action: 'paste' }) }
+    const handleCut = (e: Event) => { e.preventDefault(); emitEvent('copy_paste', 'warning', { action: 'cut' }) }
     const handleContextMenu = (e: Event) => e.preventDefault()
 
-    // 5. Face Detection Loop
-    const video = document.getElementById('camera-feed') as HTMLVideoElement | null
-    if (video && 'FaceDetector' in window) {
-      const detector = new (window as any).FaceDetector()
-      faceIntervalRef.current = setInterval(async () => {
+    // 5. Universal Face & Multi-Face Detection Loop
+    const findVideo = () => (document.getElementById('camera-feed') || document.querySelector('video')) as HTMLVideoElement | null
+
+    faceIntervalRef.current = setInterval(async () => {
+      const video = findVideo()
+      if (!video || video.readyState < 2 || video.paused) return
+
+      // Try Chrome Shape Detection API if available
+      if ('FaceDetector' in window) {
         try {
+          const detector = new (window as any).FaceDetector()
           const faces = await detector.detect(video)
-          if (faces.length === 0) emitEvent('face_absent', 'warning')
-          else if (faces.length > 1) emitEvent('face_multiple', 'critical')
+          if (faces.length === 0) {
+            emitEvent('face_absent', 'warning', { reason: 'no_face_detected' })
+          } else if (faces.length > 1) {
+            emitEvent('face_multiple', 'critical', { count: faces.length })
+          }
+          return
         } catch {}
-      }, 3000)
-    }
+      }
+
+      // Universal Canvas Multi-Blob Face & Skin Density Detector (works in all browsers)
+      try {
+        const canvas = document.createElement('canvas')
+        const width = 160
+        const height = 120
+        canvas.width = width
+        canvas.height = height
+        const ctx = canvas.getContext('2d')
+        if (!ctx) return
+
+        ctx.drawImage(video, 0, 0, width, height)
+        const frameData = ctx.getImageData(0, 0, width, height)
+        const pixels = frameData.data
+
+        let totalSkinPixels = 0
+        const columnCounts = new Array(width).fill(0)
+
+        for (let y = 0; y < height; y++) {
+          for (let x = 0; x < width; x++) {
+            const idx = (y * width + x) * 4
+            const r = pixels[idx]
+            const g = pixels[idx + 1]
+            const b = pixels[idx + 2]
+
+            // Universal skin-tone color model in RGB space
+            const isSkin = (
+              r > 40 && g > 25 && b > 15 &&
+              r > g && r > b &&
+              Math.max(r, g, b) - Math.min(r, g, b) > 12 &&
+              Math.abs(r - g) > 10
+            )
+
+            if (isSkin) {
+              totalSkinPixels++
+              columnCounts[x]++
+            }
+          }
+        }
+
+        const totalPixels = width * height
+        const skinPercentage = (totalSkinPixels / totalPixels) * 100
+
+        // 1. Face Absence: Less than 3.5% of frame area contains skin-tone pixels
+        if (skinPercentage < 3.5) {
+          emitEvent('face_absent', 'warning', { skinPercentage: skinPercentage.toFixed(1) })
+          return
+        }
+
+        // 2. Multiple Face Detection: Analyze horizontal skin density peaks
+        const smoothed = new Array(width).fill(0)
+        for (let x = 2; x < width - 2; x++) {
+          smoothed[x] = (columnCounts[x - 2] + columnCounts[x - 1] + columnCounts[x] + columnCounts[x + 1] + columnCounts[x + 2]) / 5
+        }
+
+        let peakCount = 0
+        let inPeak = false
+        const peakThreshold = height * 0.12
+
+        for (let x = 5; x < width - 5; x++) {
+          if (smoothed[x] > peakThreshold) {
+            if (!inPeak) {
+              peakCount++
+              inPeak = true
+            }
+          } else if (smoothed[x] < peakThreshold * 0.5) {
+            inPeak = false
+          }
+        }
+
+        if (peakCount >= 2) {
+          emitEvent('face_multiple', 'critical', { detectedFaces: peakCount })
+        }
+      } catch (err) {
+        console.warn('[Proctoring] Face detection frame error:', err)
+      }
+    }, 3000)
 
     // 6. Audio Monitor Loop — use shared stream if provided, otherwise acquire
     async function initAudio() {
@@ -177,7 +287,12 @@ export function useProctoring(sessionId: string) {
       }
       audioStreamRef.current = stream
       try {
-        const audioContext = new AudioContext()
+        const AudioCtxClass = window.AudioContext || (window as any).webkitAudioContext
+        if (!AudioCtxClass) return
+        const audioContext = new AudioCtxClass()
+        if (audioContext.state === 'suspended') {
+          void audioContext.resume().catch(() => {})
+        }
         const analyser = audioContext.createAnalyser()
         const source = audioContext.createMediaStreamSource(stream)
         source.connect(analyser)
@@ -191,7 +306,9 @@ export function useProctoring(sessionId: string) {
           const average = dataArray.reduce((a, b) => a + b, 0) / bufferLength
           if (average < 5) {
             silentFramesRef.current++
-            if (silentFramesRef.current >= 10) {
+            // Raise threshold: 15 consecutive silent seconds before flagging
+            // This avoids false positives during normal thinking pauses
+            if (silentFramesRef.current >= 15) {
               emitEvent('audio_silence', 'warning', { silentDurationSecs: silentFramesRef.current })
               silentFramesRef.current = 0
             }
@@ -209,6 +326,7 @@ export function useProctoring(sessionId: string) {
     // Attach Listeners safely
     document.addEventListener('visibilitychange', handleVisibility)
     window.addEventListener('blur', handleBlur)
+    window.addEventListener('focus', handleFocus)
     window.addEventListener('resize', handleResize)
     document.addEventListener('fullscreenchange', handleFullscreenChange)
     document.addEventListener('keydown', handleKeyDown)
@@ -221,6 +339,7 @@ export function useProctoring(sessionId: string) {
     return () => {
       document.removeEventListener('visibilitychange', handleVisibility)
       window.removeEventListener('blur', handleBlur)
+      window.removeEventListener('focus', handleFocus)
       window.removeEventListener('resize', handleResize)
       document.removeEventListener('fullscreenchange', handleFullscreenChange)
       document.removeEventListener('keydown', handleKeyDown)

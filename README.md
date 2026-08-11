@@ -123,6 +123,7 @@ cp .env.example .env
 | `VITE_WEBHOOK_SCORING_PIPELINE` | n8n webhook for post-interview scoring |
 | `VITE_WEBHOOK_AUDIT_RESUME_TRUTHFULNESS` | n8n webhook for resume truth audit |
 | `VITE_WEBHOOK_ANALYZE_CANDIDATE_FIT` | n8n webhook for candidate fit analysis (interview fallback) |
+| `VITE_DEEPGRAM_API_KEY` | Deepgram API key for real-time speech-to-text (Nova-2) |
 
 ## Setup
 

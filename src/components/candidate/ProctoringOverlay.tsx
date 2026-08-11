@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
-import { AlertTriangle, Eye, Monitor, Mic, X, Shield } from 'lucide-react'
-import type { ProctoringEvent } from '@/types'
+import { useEffect, useState, useRef } from 'react'
+import { AlertTriangle, Eye, Monitor, Mic, X, Shield, Info, AlertCircle } from 'lucide-react'
+import type { ProctoringEvent, ProctoringSeverity } from '@/types'
 import { fetchPublicProctoringSummary } from '@/api/proctoring'
 
 interface ProctoringOverlayProps {
@@ -11,12 +11,16 @@ interface ProctoringOverlayProps {
 export function ProctoringOverlay({ violations, sessionId }: ProctoringOverlayProps) {
   const [showWarning, setShowWarning] = useState(false)
   const [warningMessage, setWarningMessage] = useState('')
+  const [warningSeverity, setWarningSeverity] = useState<ProctoringSeverity>('warning')
   const [isDisabled, setIsDisabled] = useState(false)
   const [tabSwitchCount, setTabSwitchCount] = useState(0)
+  const [totalViolationCount, setTotalViolationCount] = useState(0)
+  const dismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     fetchPublicProctoringSummary(sessionId).then(s => {
       setTabSwitchCount(s.tabSwitches)
+      setTotalViolationCount(s.totalEvents)
     }).catch(() => {})
   }, [sessionId])
 
@@ -24,11 +28,13 @@ export function ProctoringOverlay({ violations, sessionId }: ProctoringOverlayPr
     const last = violations[violations.length - 1]
     if (!last) return
 
+    setTotalViolationCount(violations.length)
+
     const criticalCount = violations.filter(v => v.severity === 'critical').length
 
     if (last.severity === 'critical' && criticalCount >= 3) {
       setIsDisabled(true)
-      setWarningMessage('Interview terminated due to multiple security violations.')
+      setWarningMessage('Interview terminated due to multiple critical security violations.')
       return
     }
 
@@ -36,76 +42,169 @@ export function ProctoringOverlay({ violations, sessionId }: ProctoringOverlayPr
       setTabSwitchCount(prev => prev + 1)
     }
 
-    if (last.severity === 'critical') {
-      setWarningMessage('Critical violation detected. Your interview may be flagged for review.')
-      setShowWarning(true)
-      setTimeout(() => setShowWarning(false), 5000)
-    } else if (last.severity === 'warning') {
-      const messages: Record<string, string> = {
-        tab_switch: 'Tab switching detected. Stay focused on the interview.',
-        window_blur: 'Window focus lost. Please keep this window active.',
-        fullscreen_exit: 'Fullscreen mode exited. Please return to fullscreen.',
-        face_absent: 'Face not visible. Please position yourself in front of the camera.',
-        face_multiple: 'Multiple faces detected. Only the candidate should be visible.',
-        audio_silence: 'No audio detected. Please speak your answer.',
-        keyboard_shortcut: 'Keyboard shortcuts are disabled during the interview.'
-      }
-      const message = messages[last.event_type] || 'Warning: Please follow interview guidelines.'
+    // Build specific, candidate-friendly warning messages for ALL event types
+    let message = ''
+    const action = (last.payload?.action as string) || ''
+    const key = (last.payload?.key as string) || ''
 
-      setWarningMessage(message)
-      setShowWarning(true)
-      setTimeout(() => setShowWarning(false), 4000)
+    switch (last.event_type) {
+      case 'tab_switch':
+        message = 'Tab switching detected. Please stay focused on the interview window.'
+        break
+      case 'window_blur':
+        message = 'Window focus lost. Please keep the interview window active and visible.'
+        break
+      case 'browser_resize':
+        message = 'Browser window resized. Please keep the interview window maximized.'
+        break
+      case 'fullscreen_exit':
+        message = 'Fullscreen mode exited. Please return to full screen mode to continue.'
+        break
+      case 'face_absent':
+        message = 'Face not detected in camera feed. Please align yourself directly in front of the camera.'
+        break
+      case 'face_multiple':
+        message = 'Multiple faces detected in camera feed. Only the candidate should be in view.'
+        break
+      case 'face_mismatch':
+        message = 'Camera feed mismatch detected. Please remain clearly visible.'
+        break
+      case 'audio_silence':
+        message = 'No audio input detected for an extended period. Please speak your answer.'
+        break
+      case 'audio_level':
+        message = 'Audio level anomaly detected. Please check your microphone setup.'
+        break
+      case 'copy_paste':
+        if (action === 'paste') message = 'Pasting text is strictly prohibited during the interview.'
+        else if (action === 'copy') message = 'Copying text is prohibited during the interview.'
+        else message = 'Copying or pasting content is prohibited during the interview.'
+        break
+      case 'keyboard_shortcut':
+        if (key) message = `Keyboard shortcut (${key}) is disabled during the interview.`
+        else message = 'Keyboard shortcuts are disabled during the interview.'
+        break
+      default:
+        message = 'Security alert: Please adhere to all interview proctoring guidelines.'
+    }
+
+    setWarningMessage(message)
+    setWarningSeverity(last.severity)
+    setShowWarning(true)
+
+    if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current)
+
+    const duration = last.severity === 'critical' ? 6000 : last.severity === 'warning' ? 5000 : 4000
+    dismissTimerRef.current = setTimeout(() => {
+      setShowWarning(false)
+    }, duration)
+
+    return () => {
+      if (dismissTimerRef.current) clearTimeout(dismissTimerRef.current)
     }
   }, [violations])
 
   if (isDisabled) {
     return (
-      <div className="fixed inset-0 z-[100] flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.9)' }}>
-        <div className="text-center max-w-md p-8">
-          <AlertTriangle size={64} className="mx-auto mb-4" style={{ color: 'var(--red)' }} />
+      <div className="fixed inset-0 z-[100] flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.92)', backdropFilter: 'blur(10px)' }}>
+        <div className="text-center max-w-md p-8 rounded-2xl" style={{ background: 'var(--card-bg)', border: '1px solid var(--separator)' }}>
+          <AlertTriangle size={64} className="mx-auto mb-4 animate-bounce" style={{ color: 'var(--red)' }} />
           <h2 className="text-2xl font-bold text-white mb-2">Interview Terminated</h2>
-          <p style={{ color: 'var(--label-secondary)' }}>{warningMessage}</p>
+          <p className="text-sm" style={{ color: 'var(--label-secondary)' }}>{warningMessage}</p>
         </div>
       </div>
     )
   }
 
+  // Pick banner colors and icon based on severity
+  const getBannerStyle = () => {
+    switch (warningSeverity) {
+      case 'critical':
+        return {
+          bg: 'rgba(255, 69, 58, 0.95)',
+          border: '1px solid rgba(255, 69, 58, 0.5)',
+          shadow: '0 8px 32px rgba(255, 69, 58, 0.4)',
+          Icon: AlertCircle
+        }
+      case 'warning':
+        return {
+          bg: 'rgba(255, 159, 10, 0.95)',
+          border: '1px solid rgba(255, 159, 10, 0.5)',
+          shadow: '0 8px 32px rgba(255, 159, 10, 0.3)',
+          Icon: AlertTriangle
+        }
+      case 'info':
+      default:
+        return {
+          bg: 'rgba(10, 132, 255, 0.95)',
+          border: '1px solid rgba(10, 132, 255, 0.5)',
+          shadow: '0 8px 32px rgba(10, 132, 255, 0.3)',
+          Icon: Info
+        }
+    }
+  }
+
+  const banner = getBannerStyle()
+  const BannerIcon = banner.Icon
+
   return (
     <>
+      {/* Dynamic Warning Toast Banner */}
       {showWarning && (
-        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[90] animate-slide-up">
-          <div className="text-sm px-6 py-3 rounded-lg shadow-lg flex items-center gap-3"
-            style={{ background: 'rgba(255,159,10,0.9)', color: 'white' }}>
-            <AlertTriangle size={18} />
-            <span>{warningMessage}</span>
-            <button onClick={() => setShowWarning(false)} className="ml-2 opacity-70 hover:opacity-100">
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[90] animate-slide-up max-w-lg w-full px-4">
+          <div
+            className="text-sm px-5 py-3.5 rounded-xl shadow-2xl flex items-center justify-between gap-3 text-white backdrop-blur-md transition-all duration-300"
+            style={{
+              background: banner.bg,
+              border: banner.border,
+              boxShadow: banner.shadow
+            }}
+          >
+            <div className="flex items-center gap-3">
+              <BannerIcon size={20} className="shrink-0" />
+              <span className="font-medium text-xs sm:text-sm leading-snug">{warningMessage}</span>
+            </div>
+            <button
+              onClick={() => setShowWarning(false)}
+              className="p-1 rounded-lg hover:bg-white/20 transition-colors shrink-0"
+              title="Dismiss warning"
+            >
               <X size={16} />
             </button>
           </div>
         </div>
       )}
 
-      <div className="fixed top-4 right-4 z-50 flex gap-2">
+      {/* Top-Right Status Indicators */}
+      <div className="fixed top-4 right-4 z-50 flex items-center gap-2">
         {tabSwitchCount > 0 && (
-          <div className="badge-orange flex items-center gap-1.5 text-xs">
+          <div className="badge-orange flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full shadow-sm" title="Tab switch warnings">
             <Eye size={12} />
-            <span>{tabSwitchCount}</span>
+            <span>{tabSwitchCount} {tabSwitchCount === 1 ? 'switch' : 'switches'}</span>
+          </div>
+        )}
+
+        {totalViolationCount > 0 && (
+          <div className="badge-grey flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full shadow-sm" title="Total proctoring events recorded">
+            <AlertTriangle size={12} style={{ color: 'var(--orange)' }} />
+            <span>{totalViolationCount}</span>
           </div>
         )}
 
         {violations.some(v => v.event_type.startsWith('face')) && (
-          <div className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: 'color-mix(in srgb, var(--orange) 20%, transparent)' }} title="Face detection issue">
-            <Monitor size={14} style={{ color: 'var(--orange)' }} />
-          </div>
-        )}
-        {violations.some(v => v.event_type.startsWith('audio')) && (
-          <div className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: 'color-mix(in srgb, var(--orange) 20%, transparent)' }} title="Audio issue">
-            <Mic size={14} style={{ color: 'var(--orange)' }} />
+          <div className="w-7 h-7 rounded-full flex items-center justify-center shadow-sm" style={{ background: 'color-mix(in srgb, var(--orange) 20%, transparent)', border: '1px solid var(--orange)' }} title="Camera/Face warning recorded">
+            <Monitor size={13} style={{ color: 'var(--orange)' }} />
           </div>
         )}
 
-        <div className="flex items-center gap-1.5 px-2 py-1 rounded-full text-[10px]" style={{ background: 'var(--glass-fill)', border: '1px solid var(--separator)', color: 'var(--label-secondary)' }}>
-          <Shield size={10} style={{ color: 'var(--green)' }} />
+        {violations.some(v => v.event_type.startsWith('audio')) && (
+          <div className="w-7 h-7 rounded-full flex items-center justify-center shadow-sm" style={{ background: 'color-mix(in srgb, var(--blue) 20%, transparent)', border: '1px solid var(--blue)' }} title="Audio warning recorded">
+            <Mic size={13} style={{ color: 'var(--blue)' }} />
+          </div>
+        )}
+
+        <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium shadow-sm" style={{ background: 'var(--glass-fill)', border: '1px solid var(--separator)', color: 'var(--label-secondary)', backdropFilter: 'blur(8px)' }}>
+          <Shield size={11} style={{ color: 'var(--green)' }} />
           <span>Monitored</span>
         </div>
       </div>

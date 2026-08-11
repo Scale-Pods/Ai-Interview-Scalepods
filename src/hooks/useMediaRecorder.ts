@@ -30,17 +30,43 @@ interface MediaRecorderState {
  * - Individual chunk objects are each small (≈3-4 MB @ 30 s) and
  *   always within the standard upload limit.
  */
-async function uploadChunk(
+/**
+ * Upload a single Blob chunk directly to Supabase Storage with automatic retry.
+ * Handles transient network glitches ("Failed to fetch", 500s) gracefully.
+ */
+async function uploadChunkWithRetry(
   chunk: Blob,
   path: string,
-  contentType: string
+  contentType: string,
+  maxRetries = 3
 ): Promise<void> {
-  const { error } = await supabasePublic
-    .storage
-    .from('recordings')
-    .upload(path, chunk, { contentType, upsert: true })
+  let attempt = 0
+  let lastError: Error | null = null
 
-  if (error) throw new Error(`Chunk upload failed (${path}): ${error.message}`)
+  while (attempt <= maxRetries) {
+    try {
+      const { error } = await supabasePublic
+        .storage
+        .from('recordings')
+        .upload(path, chunk, { contentType, upsert: true })
+
+      if (!error) return // Success!
+      lastError = new Error(`Chunk upload error (${path}): ${error.message}`)
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err))
+    }
+
+    attempt++
+    if (attempt <= maxRetries) {
+      // Exponential backoff: 1s, 2s, 4s delay
+      const delayMs = Math.pow(2, attempt - 1) * 1000
+      console.warn(`[MediaRecorder] Chunk upload attempt ${attempt} failed for ${path}. Retrying in ${delayMs}ms...`, lastError?.message)
+      await new Promise(resolve => setTimeout(resolve, delayMs))
+    }
+  }
+
+  // Log warning if chunk ultimately failed, but avoid throwing to keep queue alive
+  console.warn(`[MediaRecorder] Chunk upload failed after ${maxRetries + 1} attempts (${path}):`, lastError)
 }
 
 export function useMediaRecorder() {
@@ -54,19 +80,18 @@ export function useMediaRecorder() {
   const durationIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const sessionIdRef        = useRef<string>('')
   const recordingIdRef      = useRef<string | null>(null)
-  const storagePathRef      = useRef<string>('')   // base path for the first chunk (used by getRecordingUrl)
+  const storagePathRef      = useRef<string>('')   // base path for the first chunk
   const compositeIntervalRef = useRef<(() => void) | null>(null)
   const mimeTypeRef         = useRef<string>('video/webm')
   const chunkIndexRef       = useRef<number>(0)
   const uploadQueueRef      = useRef<Promise<void>>(Promise.resolve())
 
-  /** Enqueue a chunk upload so they run sequentially without blocking recording */
+  /** Enqueue a chunk upload with automatic retry so they run sequentially without blocking recording */
   const enqueueChunkUpload = useCallback((chunk: Blob, path: string, contentType: string) => {
     uploadQueueRef.current = uploadQueueRef.current
-      .then(() => uploadChunk(chunk, path, contentType))
+      .then(() => uploadChunkWithRetry(chunk, path, contentType))
       .catch(err => {
-        console.warn('Background chunk upload failed:', err)
-        setState(prev => ({ ...prev, error: `Chunk upload failed: ${err.message}` }))
+        console.warn('[MediaRecorder] Background chunk upload queue warning:', err)
       })
   }, [])
 

@@ -1,46 +1,127 @@
 {
-  "name": "AI Interviewer - Session Creation",
+  "name": "Session Creation & Question Generation Workflow",
   "nodes": [
+    {
+      "parameters": {
+        "jsCode": "function uuid() {\n  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {\n    const r = Math.random() * 16 | 0;\n    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);\n  });\n}\nconst input = items[0].json.body || items[0].json;\nconst sessionId = uuid();\nconst expiresAt = new Date(Date.now() + 1 * 24 * 60 * 60 * 1000);\nconst baseUrl = input.frontendUrl || items[0].json.frontendUrl || 'http://localhost:5173';\nconst inviteLink = `${baseUrl}/interview/${sessionId}`;\nconst candidateEmail = input.candidate_email || input.email;\nconst candidateName = input.candidate_name || input.name || 'Candidate';\nif (!candidateEmail) {\n  throw new Error('Missing candidate email. Send email or candidate_email in the webhook body.');\n}\nreturn {\n  ...input,\n  candidate_email: candidateEmail,\n  candidate_name: candidateName,\n  session_id: sessionId,\n  invite_link: inviteLink,\n  token_hash: sessionId,\n  expires_at: expiresAt.toISOString(),\n  status: 'invited'\n};"
+      },
+      "id": "8e00c2ab-fa5c-4d95-8c25-4d6d3f5c8ace",
+      "name": "Generate Session",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1200,
+        1696
+      ]
+    },
     {
       "parameters": {
         "tableId": "interview_sessions_ai_interview",
         "fieldsUi": {
           "fieldValues": [
-            { "fieldId": "candidate_id", "fieldValue": "={{ $json.candidate_id }}" },
-            { "fieldId": "status", "fieldValue": "invited" },
-            { "fieldId": "expires_at", "fieldValue": "={{ (new Date(Date.now() + 24 * 60 * 60 * 1000)).toISOString() }}" }
+            {
+              "fieldId": "id",
+              "fieldValue": "={{ $json.session_id }}"
+            },
+            {
+              "fieldId": "candidate_id",
+              "fieldValue": "={{ $json.candidate_id }}"
+            },
+            {
+              "fieldId": "jd_id",
+              "fieldValue": "={{ $json.jd_id }}"
+            },
+            {
+              "fieldId": "resume_id",
+              "fieldValue": "={{ $json.resume_id }}"
+            },
+            {
+              "fieldId": "status",
+              "fieldValue": "={{ $json.status }}"
+            },
+            {
+              "fieldId": "invite_link",
+              "fieldValue": "={{ $json.invite_link }}"
+            },
+            {
+              "fieldId": "token_hash",
+              "fieldValue": "={{ $json.token_hash }}"
+            },
+            {
+              "fieldId": "expires_at",
+              "fieldValue": "={{ $json.expires_at }}"
+            },
+            {
+              "fieldId": "created_by",
+              "fieldValue": "={{ $json.hr_user_id }}"
+            }
           ]
         }
       },
-      "id": "b2e4f5a6-7b8c-9d0e-1f2a-3b4c5d6e7f80",
-      "name": "Create Session",
+      "id": "1855be22-c1ca-466f-852c-396410271094",
+      "name": "Store Session",
       "type": "n8n-nodes-base.supabase",
       "typeVersion": 1,
-      "position": [400, 300],
+      "position": [
+        -1008,
+        1696
+      ],
       "credentials": {
         "supabaseApi": {
           "id": "wMaaAewNUY90iUpo",
           "name": "Supabase account 2"
         }
       }
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $node[\"Generate Session\"].json;\nconst sessionId = $node[\"Store Session\"].json.id || input.session_id;\nconst reviewedQuestions = Array.isArray(input.questions) ? input.questions : [];\n\nfunction normalizeQuestionType(type) {\n  const t = String(type || '').toLowerCase().trim();\n  if (t === 'behavioral') return 'behavioral';\n  if (t === 'situational' || t === 'gap_probe') return 'situational';\n  if (t === 'cultural') return 'cultural';\n  return 'technical';\n}\n\nconst intro = {\n  session_id: sessionId,\n  question_text: \"Hello! I am your AI Interviewer today. Welcome to your interview. To start off, how are you doing today?\",\n  question_type: \"cultural\",\n  order_index: 0,\n  source: \"hr_reviewed_intro\"\n};\n\nconst questions = reviewedQuestions\n  .filter(q => q && String(q.question_text || '').trim())\n  .map((q, index) => ({\n    session_id: sessionId,\n    question_text: String(q.question_text).trim(),\n    question_type: normalizeQuestionType(q.question_type),\n    order_index: index + 1,\n    source: q.source || 'hr_reviewed_llm'\n  }));\n\nreturn [intro, ...questions].map(question => ({ json: question }));"
+      },
+      "id": "c3e5105b-53a6-45f7-b7c1-f48dafdf485c",
+      "name": "Prepare Reviewed Questions",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -816,
+        1696
+      ]
     },
     {
       "parameters": {
         "tableId": "interview_questions_ai_interview",
         "fieldsUi": {
           "fieldValues": [
-            { "fieldId": "session_id", "fieldValue": "={{ $node[\"Create Session\"].json.id }}" },
-            { "fieldId": "question_text", "fieldValue": "={{ $json.question }}" },
-            { "fieldId": "question_type", "fieldValue": "={{ $json.type || 'technical' }}" },
-            { "fieldId": "order_index", "fieldValue": "={{ $json.index }}" }
+            {
+              "fieldId": "session_id",
+              "fieldValue": "={{ $json.session_id }}"
+            },
+            {
+              "fieldId": "question_text",
+              "fieldValue": "={{ $json.question_text }}"
+            },
+            {
+              "fieldId": "question_type",
+              "fieldValue": "={{ $json.question_type }}"
+            },
+            {
+              "fieldId": "order_index",
+              "fieldValue": "={{ $json.order_index }}"
+            },
+            {
+              "fieldId": "source",
+              "fieldValue": "={{ $json.source }}"
+            }
           ]
         }
       },
-      "id": "c3d5e6f7-8a9b-0c1d-2e3f-4a5b6c7d8e90",
-      "name": "Store Questions",
+      "id": "3fd38982-7ed7-4099-a848-7499ae58bcb8",
+      "name": "Store Reviewed Questions",
       "type": "n8n-nodes-base.supabase",
       "typeVersion": 1,
-      "position": [600, 300],
+      "position": [
+        -576,
+        1696
+      ],
       "credentials": {
         "supabaseApi": {
           "id": "wMaaAewNUY90iUpo",
@@ -50,103 +131,478 @@
     },
     {
       "parameters": {
-        "jsCode": "const sessionId = $node[\"Create Session\"].json.id;\nreturn [\n  {\n    json: {\n      session_id: sessionId,\n      questions: [\n        { question: \"Tell me about your experience with React and TypeScript.\", type: \"technical\", index: 0 },\n        { question: \"Describe a challenging project you worked on and how you overcame obstacles.\", type: \"behavioral\", index: 1 },\n        { question: \"How do you stay updated with the latest industry trends?\", type: \"cultural\", index: 2 }\n      ]\n    }\n  }\n];"
+        "httpMethod": "POST",
+        "path": "create-session",
+        "options": {}
       },
-      "id": "d4e6f7a8-9b0c-1d2e-3f4a-5b6c7d8e9f01",
-      "name": "Generate Questions",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [800, 300]
-    },
-    {
-      "parameters": {
-        "jsCode": "return items.map(item => ({\n  json: {\n    actor_type: 'system',\n    action: 'interview_invite_sent',\n    resource_type: 'interview_sessions_ai_interview',\n    resource_id: $node[\"Create Session\"].json.id,\n    details: { email: $json.email }\n  }\n}));"
-      },
-      "id": "e5f7a8b9-0c1d-2e3f-4a5b-6c7d8e9f0123",
-      "name": "Prepare Audit",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [1000, 300]
-    },
-    {
-      "parameters": {
-        "tableId": "audit_log_ai_interview",
-        "fieldsUi": {
-          "fieldValues": [
-            { "fieldId": "actor_type", "fieldValue": "={{ $json.actor_type }}" },
-            { "fieldId": "action", "fieldValue": "={{ $json.action }}" },
-            { "fieldId": "resource_type", "fieldValue": "={{ $json.resource_type }}" },
-            { "fieldId": "resource_id", "fieldValue": "={{ $json.resource_id }}" },
-            { "fieldId": "details", "fieldValue": "={{ $json.details }}" }
-          ]
-        }
-      },
-      "id": "f6a8b9c0-1d2e-3f4a-5b6c-7d8e9f012345",
-      "name": "Audit Log",
-      "type": "n8n-nodes-base.supabase",
+      "id": "b1df5ca5-f777-4f54-91da-8786aa3c9312",
+      "name": "Webhook2",
+      "type": "n8n-nodes-base.webhook",
       "typeVersion": 1,
-      "position": [1200, 300],
+      "position": [
+        -1408,
+        1696
+      ],
+      "webhookId": "f2cb1c67-60fa-4523-9aef-ad3f2d2707c5"
+    },
+    {
+      "parameters": {
+        "fromEmail": "info@scalepods.co",
+        "toEmail": "={{ $(\"Generate Session\").first().json.candidate_email }}",
+        "subject": "={{ \"Interview Invitation for \" + $(\"Extract Position1\").first().json.position + \" - ScalePods\" }}",
+        "html": "=<!DOCTYPE html>\n<html>\n<head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"></head>\n<body style=\"margin:0;padding:0;background-color:#f4f4f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif\">\n<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"background-color:#f4f4f5\">\n<tr><td align=\"center\" style=\"padding:40px 16px\">\n<table role=\"presentation\" width=\"560\" cellpadding=\"0\" cellspacing=\"0\" style=\"background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.08)\">\n<tr><td style=\"padding:40px 40px 0 40px\">\n<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\">\n<tr><td align=\"center\">\n<img src=\"https://www.scalepods.co/_next/image?url=%2Fscalepods-navbar-logo.png&w=256&q=75&dpl=dpl_Hpfr4cYYddNiSVu9L9sUnW3ddnuW\" alt=\"ScalePods\" width=\"128\" style=\"display:inline-block;border:0;outline:none\" />\n</td></tr>\n</table>\n</td></tr>\n<tr><td style=\"padding:24px 40px 0 40px\">\n<h1 style=\"margin:0;font-size:22px;font-weight:600;color:#1c1c1e;text-align:center\">Interview Invitation: {{ $(\"Extract Position1\").first().json.position }}</h1>\n<p style=\"margin:20px 0 0 0;font-size:15px;line-height:1.6;color:#3a3a3c\">Dear {{ $(\"Generate Session\").first().json.candidate_name }},</p>\n<p style=\"margin:12px 0 0 0;font-size:15px;line-height:1.6;color:#3a3a3c\">You have been invited to complete an AI-powered interview for the position of <strong>{{ $(\"Extract Position1\").first().json.position }}</strong> with <strong>ScalePods</strong>. Please use the link below to begin.</p>\n</td></tr>\n<tr><td style=\"padding:24px 40px 0 40px\" align=\"center\">\n<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\">\n<tr><td style=\"background:#7e14ff;border-radius:10px;padding:14px 36px\">\n<a href=\"{{ $(\"Generate Session\").first().json.invite_link }}\" style=\"color:#ffffff;font-size:15px;font-weight:600;text-decoration:none;display:inline-block\">Start Your Interview</a>\n</td></tr>\n</table>\n</td></tr>\n<tr><td style=\"padding:32px 40px 0 40px\">\n<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"background:#f9f9fb;border-radius:12px;padding:20px 24px\">\n<tr><td>\n<h2 style=\"margin:0 0 12px 0;font-size:13px;font-weight:600;color:#7e14ff;text-transform:uppercase;letter-spacing:0.5px\">Setup & Preparation</h2>\n<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\">\n<tr><td style=\"padding:4px 0;font-size:14px;color:#3a3a3c;vertical-align:top\" width=\"20\">•</td><td style=\"padding:4px 0 4px 8px;font-size:14px;color:#3a3a3c\">Find a quiet, well-lit room</td></tr>\n<tr><td style=\"padding:4px 0;font-size:14px;color:#3a3a3c;vertical-align:top\" width=\"20\">•</td><td style=\"padding:4px 0 4px 8px;font-size:14px;color:#3a3a3c\">Camera and microphone must be ready</td></tr>\n<tr><td style=\"padding:4px 0;font-size:14px;color:#3a3a3c;vertical-align:top\" width=\"20\">•</td><td style=\"padding:4px 0 4px 8px;font-size:14px;color:#3a3a3c\">Stable internet connection required</td></tr>\n<tr><td style=\"padding:4px 0;font-size:14px;color:#3a3a3c;vertical-align:top\" width=\"20\">•</td><td style=\"padding:4px 0 4px 8px;font-size:14px;color:#3a3a3c\">Use <strong>Chrome</strong> or <strong>Edge</strong> for best results</td></tr>\n<tr><td style=\"padding:4px 0;font-size:14px;color:#3a3a3c;vertical-align:top\" width=\"20\">•</td><td style=\"padding:4px 0 4px 8px;font-size:14px;color:#3a3a3c\">Set aside ~15-20 minutes of uninterrupted time</td></tr>\n</table>\n</td></tr>\n</table>\n</td></tr>\n<tr><td style=\"padding:16px 40px 0 40px\">\n<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"background:#f9f9fb;border-radius:12px;padding:20px 24px\">\n<tr><td>\n<h2 style=\"margin:0 0 12px 0;font-size:13px;font-weight:600;color:#7e14ff;text-transform:uppercase;letter-spacing:0.5px\">Proctoring Notice</h2>\n<p style=\"margin:0 0 10px 0;font-size:14px;line-height:1.5;color:#3a3a3c\">This interview is monitored to ensure integrity. By proceeding, you acknowledge:</p>\n<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\">\n<tr><td style=\"padding:4px 0;font-size:14px;color:#3a3a3c;vertical-align:top\" width=\"20\">•</td><td style=\"padding:4px 0 4px 8px;font-size:14px;color:#3a3a3c\">Video and audio are recorded throughout</td></tr>\n<tr><td style=\"padding:4px 0;font-size:14px;color:#3a3a3c;vertical-align:top\" width=\"20\">•</td><td style=\"padding:4px 0 4px 8px;font-size:14px;color:#3a3a3c\">Your face must remain visible on camera</td></tr>\n<tr><td style=\"padding:4px 0;font-size:14px;color:#3a3a3c;vertical-align:top\" width=\"20\">•</td><td style=\"padding:4px 0 4px 8px;font-size:14px;color:#3a3a3c\">Do not switch tabs or applications</td></tr>\n<tr><td style=\"padding:4px 0;font-size:14px;color:#3a3a3c;vertical-align:top\" width=\"20\">•</td><td style=\"padding:4px 0 4px 8px;font-size:14px;color:#3a3a3c\">Copying or pasting text is not permitted</td></tr>\n<tr><td style=\"padding:4px 0;font-size:14px;color:#3a3a3c;vertical-align:top\" width=\"20\">•</td><td style=\"padding:4px 0 4px 8px;font-size:14px;color:#3a3a3c\">No other people or devices should be present</td></tr>\n<tr><td style=\"padding:4px 0;font-size:14px;color:#3a3a3c;vertical-align:top\" width=\"20\">•</td><td style=\"padding:4px 0 4px 8px;font-size:14px;color:#3a3a3c\">You must remain in fullscreen mode</td></tr>\n<tr><td style=\"padding:4px 0;font-size:14px;color:#3a3a3c;vertical-align:top\" width=\"20\">•</td><td style=\"padding:4px 0 4px 8px;font-size:14px;color:#3a3a3c\"><strong>3 or more critical violations will terminate the interview</strong></td></tr>\n</table>\n</td></tr>\n</table>\n</td></tr>\n<tr><td style=\"padding:20px 40px 0 40px\">\n<p style=\"margin:0;font-size:14px;line-height:1.5;color:#8e8e93\">This link expires after <strong style=\"color:#3a3a3c\">24 Hours</strong>.</p>\n</td></tr>\n<tr><td style=\"padding:20px 40px 0 40px\">\n<p style=\"margin:0;font-size:14px;line-height:1.5;color:#3a3a3c\">Best regards,<br><strong>ScalePods Team</strong></p>\n</td></tr>\n<tr><td style=\"padding:32px 40px 24px 40px\">\n<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"border-top:1px solid #e5e5ea;padding-top:16px\">\n<tr><td align=\"center\">\n<p style=\"margin:0;font-size:12px;color:#aeaeb2\">ScalePods - AI-Powered Interview Platform</p>\n</td></tr>\n</table>\n</td></tr>\n</table>\n</td></tr>\n</table>\n</body>\n</html>",
+        "options": {}
+      },
+      "id": "728843d5-cf3b-4567-b805-cfc2bd14c715",
+      "name": "Send Email1",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 1,
+      "position": [
+        896,
+        1696
+      ],
       "credentials": {
-        "supabaseApi": {
-          "id": "wMaaAewNUY90iUpo",
-          "name": "Supabase account 2"
+        "smtp": {
+          "id": "sOjQCdt6jZVt2pCD",
+          "name": "AMAZON SES"
         }
       }
     },
     {
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ {\n  session_id: $node['Create Session'].json.id,\n  invite_link: $node['Create Session'].json.invite_link,\n  status: 'invited'\n} }}"
+        "responseBody": "={{ { invite_link: $node['Generate Session'].json.invite_link, session_id: $node['Generate Session'].json.session_id } }}",
+        "options": {}
       },
-      "id": "resp-session-creation-001",
-      "name": "Build Response",
+      "id": "6d28e3c6-f6e7-4294-b418-77b586262d9d",
+      "name": "Build Response2",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1,
-      "position": [1400, 300]
+      "position": [
+        1568,
+        1696
+      ]
     },
     {
       "parameters": {
-        "httpMethod": "POST",
-        "path": "create-session",
-        "options": {
-          "responseMode": "responseNode"
+        "jsCode": "const storeSession = $(\"Store Session\").first().json;\nconst genSession = $(\"Generate Session\").first().json;\nreturn items.map(item => ({\n  json: {\n    actor_type: 'system',\n    action: 'interview_invite_sent',\n    resource_type: 'interview_sessions',\n    resource_id: storeSession.id,\n    details: { email: genSession.candidate_email }\n  }\n}));"
+      },
+      "id": "b3854748-5dfd-48ff-ab3a-58c4d3f16b12",
+      "name": "Prepare Audit2",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1152,
+        1696
+      ]
+    },
+    {
+      "parameters": {
+        "tableId": "audit_log_ai_interview",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "actor_type",
+              "fieldValue": "={{ $json.actor_type }}"
+            },
+            {
+              "fieldId": "action",
+              "fieldValue": "={{ $json.action }}"
+            },
+            {
+              "fieldId": "resource_type",
+              "fieldValue": "={{ $json.resource_type }}"
+            },
+            {
+              "fieldId": "resource_id",
+              "fieldValue": "={{ $json.resource_id }}"
+            },
+            {
+              "fieldId": "details",
+              "fieldValue": "={{ $json.details }}"
+            }
+          ]
         }
       },
-      "id": "a1b2c3d4-e5f6-7890-abcd-ef0123456789",
-      "name": "Webhook",
-      "type": "n8n-nodes-base.webhook",
+      "id": "8a239916-930b-4469-8cd8-b5aa41f9b662",
+      "name": "Audit Log2",
+      "type": "n8n-nodes-base.supabase",
       "typeVersion": 1,
-      "position": [200, 300],
-      "webhookId": "47f5a139-6aab-455f-96e9-ea04cd3788da"
+      "position": [
+        1376,
+        1696
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "wMaaAewNUY90iUpo",
+          "name": "Supabase account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "job_descriptions_ai_interview",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "condition": "eq",
+              "keyValue": "={{ $(\"Store Session\").first().json.jd_id }}"
+            }
+          ]
+        }
+      },
+      "id": "d001cbf3-3475-4cc0-86b3-29aad393091a",
+      "name": "Fetch Position1",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        -336,
+        1696
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "wMaaAewNUY90iUpo",
+          "name": "Supabase account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const jd = $input.first().json;\nconst role = jd.parsed_roles?.[0] || 'the position';\nreturn [{ json: { position: role } }];"
+      },
+      "id": "f3cf1f0a-1c2a-4772-8f79-0fa764b9d7c1",
+      "name": "Extract Position1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        1696
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const genSession = $(\"Generate Session\").first().json;\nconst storeSession = $(\"Store Session\").first().json;\nconst position = $(\"Extract Position1\").first().json.position || 'the position';\nreturn [{\n  json: {\n    candidate_email: genSession.candidate_email,\n    candidate_name: genSession.candidate_name,\n    invite_link: genSession.invite_link,\n    expires_at: genSession.expires_at,\n    session_id: storeSession.id,\n    position: position\n  }\n}];"
+      },
+      "id": "b1d8242c-7e45-4e42-afd9-956bce5fa65f",
+      "name": "Prepare Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        688,
+        1696
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "tableId": "resumes_ai_interview",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "condition": "eq",
+              "keyValue": "={{ $(\"Store Session\").first().json.resume_id }}"
+            }
+          ]
+        }
+      },
+      "id": "26b95f31-8633-4304-a0f6-46acceaa87b0",
+      "name": "Fetch Resume Session",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        -160,
+        1696
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "wMaaAewNUY90iUpo",
+          "name": "Supabase account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{\n  {\n    \"model\": \"gpt-4.1-mini\",\n    \"messages\": [\n      {\n        \"role\": \"user\",\n        \"content\": $json.prompt\n      }\n    ],\n    \"response_format\": { \"type\": \"json_object\" }\n  }\n}}",
+        "options": {}
+      },
+      "id": "7615fa14-0d74-40aa-8734-3fcd717782fa",
+      "name": "Generate Blueprint LLM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -16,
+        1696
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "WlHKo4N02BhjQPJK",
+          "name": "Header Auth account 7"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const sessionId = $(\"Store Session\").first().json.id;\nconst content = JSON.parse($input.first().json.choices[0].message.content);\nreturn [{\n  json: {\n    session_id: sessionId,\n    version: 'v1',\n    competencies: content.competencies || [],\n    question_plan: content.question_plan || [],\n    candidate_summary: content.candidate_summary || { strengths: [], gaps: [], claims_to_validate: [] },\n    constraints: content.constraints || { max_primary_questions: 10, max_follow_ups_per_question: 1 }\n  }\n}];"
+      },
+      "id": "ab19bdc0-4d90-4b7f-a8ae-af92f9aced1e",
+      "name": "Parse Blueprint JSON",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        144,
+        1696
+      ]
+    },
+    {
+      "parameters": {
+        "tableId": "interview_blueprints_ai_interview",
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "session_id",
+              "fieldValue": "={{ $json.session_id }}"
+            },
+            {
+              "fieldId": "version",
+              "fieldValue": "={{ $json.version }}"
+            },
+            {
+              "fieldId": "competencies",
+              "fieldValue": "={{ $json.competencies }}"
+            },
+            {
+              "fieldId": "question_plan",
+              "fieldValue": "={{ $json.question_plan }}"
+            },
+            {
+              "fieldId": "candidate_summary",
+              "fieldValue": "={{ $json.candidate_summary }}"
+            },
+            {
+              "fieldId": "constraints",
+              "fieldValue": "={{ $json.constraints }}"
+            }
+          ]
+        }
+      },
+      "id": "a7017450-318e-43ba-a1b9-4588ddcda677",
+      "name": "Store Blueprint",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        304,
+        1696
+      ],
+      "credentials": {
+        "supabaseApi": {
+          "id": "wMaaAewNUY90iUpo",
+          "name": "Supabase account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const jdText = $('Fetch Position1').first().json.raw_text || '';\nconst resumeText = $('Fetch Resume Session').first().json.raw_text || '';\nconst truncate = (t, max) => !t ? '' : t.length > max ? t.slice(0, max) + '...[truncated]' : t;\n\nconst prompt = `You are a senior technical recruiter designing a realistic live screening interview plan for a candidate.\n\nYour task: analyze the Job Description and Resume, then produce a structured 10-question interview blueprint.\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nSTEP 1 — EXTRACT TOOLS & IDENTIFY GAPS\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nExtract 6-10 specifically named tools, languages, or frameworks required by the JD.\n\n- importance: \"must_have\" if required/essential in JD, \"nice_to_have\" if preferred/bonus\n- mentioned_in_resume: true ONLY if the exact tool name appears in the resume\n- resume_context: the exact phrase from the resume where it appears, or null\n\nOnly flag GENUINE alignment gaps (domain mismatch, seniority mismatch, stack mismatch). DO NOT invent gaps for well-matched candidates — if the candidate fits well, flagged gaps should be zero or one.\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nSTEP 2 — DESIGN QUESTION PLAN (EXACTLY 10)\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nTARGET COMPOSITION:\n- technical_jd (4-7): JD must_have tools first, nice_to_have after.\n  - verification_mode: \"verify_claim\" if tool appears in resume (candidate claims experience), \"baseline_check\" if not (testing baseline awareness only)\n- technical_resume (0-1): A tool the candidate claims on resume that is NOT in the JD — verify actual depth. Skip if no such tool exists.\n- gap_probe (0-2): ONLY if real alignment gaps exist. Probe warmly and curiously, not accusatorially. Convert any unused gap slots to additional technical_jd.\n- problem_solving (1): A real-world scenario or case-based question testing practical reasoning. No target_tool needed.\n- cultural (2): Work style, collaboration, handling feedback, team dynamics.\n\nDIFFICULTY GUIDE:\n- \"foundation\": What the tool is, what problem it solves, key trade-offs. Use for early interview questions.\n- \"applied\": Real implementation decisions, debugging approach, hands-on experience. Use for mid-interview questions.\n\nCOMPETENCY WEIGHTS: 1-5 where 5 = absolutely critical to job success, 1 = supplementary/nice to have.\n\nexpected_evidence: List 2-3 CONCRETE signals that would prove genuine hands-on experience. NOT generic (\"has experience with React\"). Be specific:\n  ✅ GOOD: \"Names specific React hooks they use and explain why\", \"Describes a real performance debugging scenario\", \"Explains trade-off between SSR and CSR\"\n  ❌ BAD: \"Knows React\", \"Has frontend experience\"\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nSTEP 3 — CANDIDATE SUMMARY\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n- strengths: 3-4 specific resume signals that map well to JD requirements (be concrete, not generic)\n- gaps: ONLY real gaps — things the JD requires that the resume shows zero evidence of. If none, return [].\n- claims_to_validate: 2-3 specific resume claims that sound strong but need live verification (e.g. \"Led a team of 8 engineers\", \"Built system handling 1M requests/day\", \"Reduced load time by 60%\")\n\nSTRICT RULES:\n- Competency names must be SPECIFIC tools (\"React\", \"PostgreSQL\") — never abstract (\"frontend\", \"databases\")\n- Do NOT use the same tool in both technical_jd and technical_resume\n- Total plan items must equal EXACTLY 10\n- gap_ref must be null for non-gap plan items\n\nJob Description:\n\"\"\"\n${truncate(jdText, 3000)}\n\"\"\"\n\nCandidate Resume:\n\"\"\"\n${truncate(resumeText, 3000)}\n\"\"\"\n\nReturn ONLY valid JSON matching this exact schema:\n{\n  \"competencies\": [\n    {\n      \"id\": \"react\",\n      \"name\": \"React\",\n      \"weight\": 5,\n      \"description\": \"Core frontend framework required by JD\",\n      \"expected_evidence\": [\n        \"Names specific hooks they use and explains why\",\n        \"Describes a real component architecture decision\",\n        \"Can explain the trade-off between controlled and uncontrolled components\"\n      ]\n    }\n  ],\n  \"question_plan\": [\n    {\n      \"id\": \"plan-1\",\n      \"category\": \"technical_jd\",\n      \"competency_ids\": [\"react\"],\n      \"target_tool\": \"React\",\n      \"verification_mode\": \"verify_claim\",\n      \"objective\": \"Verify depth of React experience claimed on resume\",\n      \"question_type\": \"technical\",\n      \"difficulty\": \"applied\",\n      \"gap_ref\": null\n    }\n  ],\n  \"candidate_summary\": {\n    \"strengths\": [\"3 years of hands-on React at Acme Corp — matches core JD requirement\"],\n    \"gaps\": [\"No evidence of Docker or containerisation despite JD listing it as must_have\"],\n    \"claims_to_validate\": [\"Led a team of 5 engineers on the checkout redesign\"]\n  },\n  \"constraints\": {\"max_primary_questions\": 10, \"max_follow_ups_per_question\": 1}\n}`;\n\nreturn [{ json: { prompt } }];"
+      },
+      "id": "bbp-code-node-1",
+      "name": "Build Blueprint Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -160,
+        1696
+      ]
     }
   ],
   "connections": {
-    "Webhook": {
-      "main": [[{ "node": "Create Session", "type": "main", "index": 0 }]]
+    "Generate Session": {
+      "main": [
+        [
+          {
+            "node": "Store Session",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
-    "Create Session": {
-      "main": [[
-        { "node": "Store Questions", "type": "main", "index": 0 },
-        { "node": "Generate Questions", "type": "main", "index": 0 },
-        { "node": "Prepare Audit", "type": "main", "index": 0 }
-      ]]
+    "Store Session": {
+      "main": [
+        [
+          {
+            "node": "Prepare Reviewed Questions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
-    "Generate Questions": {
-      "main": [[{ "node": "Store Questions", "type": "main", "index": 0 }]]
+    "Prepare Reviewed Questions": {
+      "main": [
+        [
+          {
+            "node": "Store Reviewed Questions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
-    "Store Questions": {
-      "main": [[{ "node": "Build Response", "type": "main", "index": 0 }]]
+    "Store Reviewed Questions": {
+      "main": [
+        [
+          {
+            "node": "Fetch Position1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
-    "Prepare Audit": {
-      "main": [[{ "node": "Audit Log", "type": "main", "index": 0 }]]
+    "Webhook2": {
+      "main": [
+        [
+          {
+            "node": "Generate Session",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
-    "Audit Log": {
-      "main": [[{ "node": "Build Response", "type": "main", "index": 0 }]]
+    "Send Email1": {
+      "main": [
+        [
+          {
+            "node": "Prepare Audit2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Audit2": {
+      "main": [
+        [
+          {
+            "node": "Audit Log2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Audit Log2": {
+      "main": [
+        [
+          {
+            "node": "Build Response2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Position1": {
+      "main": [
+        [
+          {
+            "node": "Fetch Resume Session",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Position1": {
+      "main": [
+        [
+          {
+            "node": "Prepare Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Email": {
+      "main": [
+        [
+          {
+            "node": "Send Email1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Resume Session": {
+      "main": [
+        [
+          {
+            "node": "Build Blueprint Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Blueprint LLM": {
+      "main": [
+        [
+          {
+            "node": "Parse Blueprint JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Blueprint JSON": {
+      "main": [
+        [
+          {
+            "node": "Store Blueprint",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Blueprint": {
+      "main": [
+        [
+          {
+            "node": "Extract Position1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Blueprint Prompt": {
+      "main": [
+        [
+          {
+            "node": "Generate Blueprint LLM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "pinData": {},
-  "meta": {
-    "templateCredsSetupCompleted": true,
-    "instanceId": "11e350345aae172743fe2665ba36f76304fbd6b68282474d7d08206f6a010061"
+  "settings": {
+    "executionOrder": "v1"
   }
 }

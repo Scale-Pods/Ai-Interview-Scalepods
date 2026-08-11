@@ -22,8 +22,11 @@ export function ProctoringProvider({ children }: { children: React.ReactNode }) 
   const localProctoring = useProctoring(sessionId || '')
 
   const startProctoring = useCallback(async (sid: string, audioStream?: MediaStream) => {
-    setSessionId(sid)
+    // Set sessionId FIRST synchronously via the ref path inside useProctoring,
+    // then update React state. This prevents the race condition where events
+    // fire before the state update settles, resulting in empty session_ids.
     await localProctoring.start(sid, audioStream)
+    setSessionId(sid)
   }, [localProctoring])
 
   const stopProctoring = useCallback(() => {

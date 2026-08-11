@@ -30,13 +30,18 @@ async function extractPdfText(file: File): Promise<string> {
 }
 
 export function getMimeType(): string {
-  if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')) {
-    return 'video/webm;codecs=vp9,opus'
+  if (typeof MediaRecorder === 'undefined') return ''
+  const candidates = [
+    'video/webm;codecs=vp9,opus',
+    'video/webm;codecs=vp8,opus',
+    'video/webm',
+    'video/mp4;codecs=avc1,mp4a.40.2',
+    'video/mp4'
+  ]
+  for (const mime of candidates) {
+    if (MediaRecorder.isTypeSupported(mime)) return mime
   }
-  if (MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')) {
-    return 'video/webm;codecs=vp8,opus'
-  }
-  return 'video/webm'
+  return ''
 }
 
 export async function getCameraStream(constraints?: MediaTrackConstraints, timeoutMs = 6000): Promise<MediaStream> {

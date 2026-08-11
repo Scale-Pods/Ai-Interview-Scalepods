@@ -142,8 +142,13 @@ VITE_WEBHOOK_ANALYZE_CANDIDATE=https://your-n8n.com/webhook/analyze-candidate
 VITE_WEBHOOK_SCORING_PIPELINE=https://your-n8n.com/webhook/score-interview
 VITE_WEBHOOK_AUDIT_RESUME_TRUTHFULNESS=https://your-n8n.com/webhook/audit-resume-truthfulness
 VITE_WEBHOOK_ANALYZE_CANDIDATE_FIT=https://your-n8n.com/webhook/analyze-candidate-fit
+
+# Deepgram STT (optional — falls back to Web Speech API if omitted)
+VITE_DEEPGRAM_API_KEY=your-deepgram-api-key
+VITE_DEEPGRAM_MODEL=nova-2
 ```
 
+> **Note**: `VITE_DEEPGRAM_API_KEY` enables high-accuracy real-time speech transcription (Nova-2) over WebSockets. Obtain a key at [Deepgram Console](https://console.deepgram.com).
 > **Note**: `VITE_GROQ_API_KEY` is configured directly in n8n as a Header Auth credential — it does not need to be in `.env` unless your n8n nodes read it from an environment variable.
 
 ### Local development proxy

@@ -24,6 +24,7 @@ export function VideoFeed({ stream, muted = false, mirrored = true, className = 
         <>
           <video
             ref={videoRef}
+            id="camera-feed"
             autoPlay playsInline muted={muted}
             className={`w-full h-full object-cover ${mirrored ? 'scale-x-[-1]' : ''}`}
           />

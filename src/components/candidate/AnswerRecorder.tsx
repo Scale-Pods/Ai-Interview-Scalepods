@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { getAudioStream } from '@/utils/mediaHelpers'
 import { normalizeTechnicalSpeech } from '@/utils/speechNormalizer'
+import { DeepgramSTT } from '@/utils/deepgram'
 
 const SILENCE_TIMEOUT_MS = 4000
 const COUNTDOWN_TENTHS = Math.floor(SILENCE_TIMEOUT_MS / 100)
@@ -18,6 +19,7 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
   const [duration, setDuration] = useState(0)
   const [transcript, setTranscript] = useState('')
   const [silenceCountdown, setSilenceCountdown] = useState(COUNTDOWN_TENTHS)
+  const [sttProvider, setSttProvider] = useState<'deepgram' | 'webspeech' | 'none'>('none')
 
   const isRecordingRef = useRef(false)
   const transcriptRef = useRef('')
@@ -32,7 +34,9 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
   const chunksRef = useRef<Blob[]>([])
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const recognitionRef = useRef<any>(null)
+  const deepgramRef = useRef<DeepgramSTT | null>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
   const analyserRef = useRef<AnalyserNode | null>(null)
   const rafRef = useRef<number>(0)
   const audioActivityIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -101,12 +105,24 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
     audioBlobRef.current = null
   }, [onAnswerComplete])
 
+  const stopSTTEngines = useCallback(() => {
+    if (deepgramRef.current) {
+      deepgramRef.current.stop()
+      deepgramRef.current = null
+    }
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop()
+      } catch {}
+      recognitionRef.current = null
+    }
+  }, [])
+
   const stopAndSubmit = useCallback(() => {
     if (!isRecordingRef.current) return
     shouldSubmitRef.current = true
 
     clearCountdown()
-
     isRecordingRef.current = false
 
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
@@ -114,15 +130,12 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
     }
     mediaRecorderRef.current = null
 
-    if (recognitionRef.current) {
-      recognitionRef.current.stop()
-    }
-    recognitionRef.current = null
+    stopSTTEngines()
 
     if (intervalRef.current) clearInterval(intervalRef.current)
     clearAudioActivityMonitor()
     cancelAnimationFrame(rafRef.current)
-  }, [clearAudioActivityMonitor, clearCountdown])
+  }, [clearAudioActivityMonitor, clearCountdown, stopSTTEngines])
 
   const stopRecordingSilently = useCallback(() => {
     shouldSubmitRef.current = false
@@ -134,14 +147,13 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
       mediaRecorderRef.current.stop()
     }
     mediaRecorderRef.current = null
-    if (recognitionRef.current) {
-      recognitionRef.current.stop()
-    }
-    recognitionRef.current = null
+
+    stopSTTEngines()
+
     if (intervalRef.current) clearInterval(intervalRef.current)
     clearAudioActivityMonitor()
     cancelAnimationFrame(rafRef.current)
-  }, [clearAudioActivityMonitor, clearCountdown])
+  }, [clearAudioActivityMonitor, clearCountdown, stopSTTEngines])
 
   const startCountdown = useCallback(() => {
     clearCountdown()
@@ -159,6 +171,50 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
     }, 100)
   }, [clearCountdown, stopAndSubmit])
 
+  const startWebSpeechFallback = useCallback((gen: number) => {
+    const SpeechRecognitionAPI = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+    if (SpeechRecognitionAPI) {
+      setSttProvider('webspeech')
+      const recognition = new SpeechRecognitionAPI()
+      recognition.continuous = true
+      recognition.interimResults = true
+      recognition.lang = navigator.language || 'en-US'
+
+      recognition.onresult = (event: any) => {
+        if (gen !== generationRef.current) return
+
+        let final = ''
+        for (let i = 0; i < event.results.length; i++) {
+          final += event.results[i][0].transcript
+        }
+        
+        const normalized = normalizeTechnicalSpeech(final)
+        setTranscript(normalized)
+        transcriptRef.current = normalized
+
+        if (isVoiceActiveRef.current) {
+          clearCountdown()
+        } else if (final.trim().length > 0) {
+          startCountdown()
+        }
+      }
+
+      recognition.onend = () => {
+        if (gen !== generationRef.current) return
+        if (isRecordingRef.current) {
+          try {
+            recognition.start()
+          } catch {}
+        }
+      }
+
+      recognition.start()
+      recognitionRef.current = recognition
+    } else {
+      setSttProvider('none')
+    }
+  }, [clearCountdown, startCountdown])
+
   const startRecording = useCallback(async () => {
     if (isRecordingRef.current) return
     
@@ -167,7 +223,6 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
     const gen = ++generationRef.current
 
     shouldSubmitRef.current = false
-    // Defensively clear any leftover state from previous recordings
     clearCountdown()
     setTranscript('')
     transcriptRef.current = ''
@@ -180,7 +235,11 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
         return
       }
 
-      const audioCtx = new AudioContext()
+      const AudioCtxClass = window.AudioContext || (window as any).webkitAudioContext
+      const audioCtx = new AudioCtxClass()
+      if (audioCtx.state === 'suspended') {
+        void audioCtx.resume().catch(() => {})
+      }
       if (audioCtx.state === 'suspended') {
         await audioCtx.resume().catch(() => {})
       }
@@ -190,14 +249,10 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
       source.connect(analyser)
       analyserRef.current = analyser
 
-      // Use the microphone signal for silence detection. Speech-recognition
-      // results can arrive late or stop unexpectedly while a person is still
-      // speaking, which must not trigger an automatic submission.
       const audioData = new Uint8Array(analyser.fftSize)
       let wasSpeaking = false
       clearAudioActivityMonitor()
       
-      // Delay starting the audio activity monitor to allow audio context initialization to settle
       setTimeout(() => {
         if (gen !== generationRef.current || !isRecordingRef.current) return
         audioActivityIntervalRef.current = setInterval(() => {
@@ -224,10 +279,10 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
       }
 
       recorder.onstop = () => {
-        // Ignore stale handler from a previous generation
         if (gen !== generationRef.current) return
 
-        const blob = new Blob(chunksRef.current, { type: 'audio/webm' })
+        const actualType = recorder.mimeType || 'audio/webm'
+        const blob = new Blob(chunksRef.current, { type: actualType })
         audioBlobRef.current = blob
         clearAudioActivityMonitor()
         void audioCtx.close().catch(() => {})
@@ -251,54 +306,41 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
 
       intervalRef.current = setInterval(() => setDuration(prev => prev + 1), 1000)
 
-      const SpeechRecognitionAPI = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-      if (SpeechRecognitionAPI) {
-        const recognition = new SpeechRecognitionAPI()
-        recognition.continuous = true
-        recognition.interimResults = true
-        recognition.lang = navigator.language || 'en-US'
+      // Start Deepgram STT if configured; fallback to Web Speech API if unconfigured or on error
+      if (DeepgramSTT.isConfigured()) {
+        try {
+          const deepgram = new DeepgramSTT({
+            onTranscript: (rawText) => {
+              if (gen !== generationRef.current) return
+              const normalized = normalizeTechnicalSpeech(rawText)
+              setTranscript(normalized)
+              transcriptRef.current = normalized
 
-        recognition.onresult = (event: any) => {
-          // Ignore stale handler from a previous generation
-          if (gen !== generationRef.current) return
-
-          let final = ''
-          for (let i = 0; i < event.results.length; i++) {
-            final += event.results[i][0].transcript
-          }
-          
-          const normalized = normalizeTechnicalSpeech(final)
-          setTranscript(normalized)
-          transcriptRef.current = normalized
-
-          if (isVoiceActiveRef.current) {
-            clearCountdown()
-          } else if (final.trim().length > 0) {
-            startCountdown()
-          }
+              if (isVoiceActiveRef.current) {
+                clearCountdown()
+              } else if (rawText.trim().length > 0) {
+                startCountdown()
+              }
+            },
+            onError: (err) => {
+              console.warn('Deepgram WebSocket error, falling back to Web Speech API:', err)
+              startWebSpeechFallback(gen)
+            }
+          })
+          deepgramRef.current = deepgram
+          await deepgram.start(stream)
+          setSttProvider('deepgram')
+        } catch (err) {
+          console.warn('Deepgram initialization failed, falling back to Web Speech API:', err)
+          startWebSpeechFallback(gen)
         }
-
-        recognition.onend = () => {
-          // Ignore stale handler from a previous generation
-          if (gen !== generationRef.current) return
-
-          // The browser can end recognition during a pause or while processing
-          // audio. Keep recording and restart it; microphone activity controls
-          // the silence countdown and eventual submission.
-          if (isRecordingRef.current) {
-            try {
-              recognition.start()
-            } catch {}
-          }
-        }
-
-        recognition.start()
-        recognitionRef.current = recognition
+      } else {
+        startWebSpeechFallback(gen)
       }
     } catch (err) {
       console.error('Failed to start recording stream:', err)
     }
-  }, [audioStream, clearAudioActivityMonitor, clearCountdown, doSubmit, drawWaveform, startCountdown])
+  }, [audioStream, clearAudioActivityMonitor, clearCountdown, doSubmit, drawWaveform, startCountdown, startWebSpeechFallback])
 
   // Effect: Auto trigger start/stop based on AI speaking status
   useEffect(() => {
@@ -326,20 +368,27 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      // Bump generation so pending stale handlers see a mismatch and bail
       generationRef.current += 1
       shouldSubmitRef.current = false
       isRecordingRef.current = false
       clearCountdown()
       mediaRecorderRef.current?.stop()
       mediaRecorderRef.current = null
-      recognitionRef.current?.stop()
-      recognitionRef.current = null
+      stopSTTEngines()
       if (intervalRef.current) clearInterval(intervalRef.current)
       clearAudioActivityMonitor()
       cancelAnimationFrame(rafRef.current)
     }
-  }, [clearAudioActivityMonitor, clearCountdown])
+  }, [clearAudioActivityMonitor, clearCountdown, stopSTTEngines])
+
+  // Auto-expand response textarea based on content length
+  useEffect(() => {
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto'
+      const newHeight = Math.max(70, Math.min(textareaRef.current.scrollHeight, 400))
+      textareaRef.current.style.height = `${newHeight}px`
+    }
+  }, [transcript])
 
   const minutes = Math.floor(duration / 60)
   const seconds = duration % 60
@@ -362,6 +411,27 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
               <div className="flex items-center gap-2">
                 <span className="w-2 h-2 rounded-full animate-ping" style={{ background: 'var(--green)' }} />
                 <span className="text-xs font-semibold" style={{ color: 'var(--green)' }}>Listening</span>
+                {sttProvider === 'deepgram' && (
+                  <span className="px-2 py-0.5 text-[10px] font-semibold rounded-md flex items-center gap-1.5"
+                    style={{
+                      background: 'rgba(147, 51, 234, 0.12)',
+                      border: '1px solid rgba(147, 51, 234, 0.3)',
+                      color: '#c084fc'
+                    }}>
+                    <span className="w-1.5 h-1.5 rounded-full bg-purple-400" />
+                    Deepgram Nova-2
+                  </span>
+                )}
+                {sttProvider === 'webspeech' && (
+                  <span className="px-2 py-0.5 text-[10px] font-medium rounded-md text-xs"
+                    style={{
+                      background: 'var(--fill-tertiary)',
+                      border: '1px solid var(--separator)',
+                      color: 'var(--label-secondary)'
+                    }}>
+                    Web Speech API
+                  </span>
+                )}
               </div>
               <div className="flex items-center gap-3">
                 <div className="flex items-center gap-1.5">
@@ -396,6 +466,7 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
             />
 
             <textarea
+              ref={textareaRef}
               value={transcript}
               onChange={(e) => {
                 const val = e.target.value
@@ -408,7 +479,7 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
                 }
               }}
               placeholder="Speak your response now (you can also edit or type words here)..."
-              className="w-full text-sm leading-relaxed font-medium rounded-xl p-3 min-h-[70px] resize-y transition-all"
+              className="w-full text-sm leading-relaxed font-medium rounded-xl p-3 min-h-[70px] max-h-[400px] overflow-y-auto transition-all duration-150 resize-none"
               style={{
                 background: 'var(--fill-quaternary)',
                 border: '1px solid var(--separator)',

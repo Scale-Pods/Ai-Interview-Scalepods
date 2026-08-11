@@ -35,7 +35,37 @@ export function RecordingPlayer({ sessionId }: RecordingPlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    fetchRecordings(sessionId).then(setRecordings).finally(() => setLoading(false))
+    const load = async () => {
+      try {
+        const recs = await fetchRecordings(sessionId)
+        if (recs && recs.length > 0) {
+          setRecordings(recs)
+          return
+        }
+      } catch (err) {
+        console.warn('[RecordingPlayer] fetchRecordings DB query notice:', err)
+      }
+
+      // Fallback: Check if Supabase Storage contains chunk folders for this session
+      try {
+        const { data: chunkFolders } = await supabase.storage.from('recordings').list(`sessions/${sessionId}/chunks`)
+        if (chunkFolders && chunkFolders.length > 0) {
+          const fallbackRecs: Recording[] = chunkFolders.map(folder => ({
+            id: folder.name,
+            session_id: sessionId,
+            stream_type: 'camera_video',
+            status: 'ready',
+            storage_path: `sessions/${sessionId}/chunks/${folder.name}/0.webm`,
+            created_at: new Date().toISOString()
+          }))
+          setRecordings(fallbackRecs)
+        }
+      } catch (err) {
+        console.warn('[RecordingPlayer] Storage fallback scan notice:', err)
+      }
+    }
+
+    load().finally(() => setLoading(false))
   }, [sessionId])
 
   useEffect(() => {
@@ -97,24 +127,24 @@ export function RecordingPlayer({ sessionId }: RecordingPlayerProps) {
 
     try {
       if (isChunkedRecording(recording)) {
-        // Concatenate all chunks into a single continuous full recording Blob
+        // Concatenate all available chunks into a single continuous full recording Blob
         const chunkDir = recording.storage_path.replace(/\/0\.webm$/, '').replace(/0\.webm$/, '')
         const { data: chunkList, error: listError } = await supabase
           .storage
           .from('recordings')
-          .list(chunkDir, { limit: 200 })
+          .list(chunkDir, { limit: 500 })
 
         if (!listError && chunkList && chunkList.length > 0) {
           const sorted = [...chunkList]
-            .filter(f => f.name.endsWith('.webm'))
+            .filter(f => f.name.endsWith('.webm') || f.name.endsWith('.mp4'))
             .sort((a, b) => {
-              const ai = parseInt(a.name.replace('.webm', ''), 10)
-              const bi = parseInt(b.name.replace('.webm', ''), 10)
+              const ai = parseInt(a.name.replace(/\.(webm|mp4)$/, ''), 10)
+              const bi = parseInt(b.name.replace(/\.(webm|mp4)$/, ''), 10)
               return (isNaN(ai) ? 0 : ai) - (isNaN(bi) ? 0 : bi)
             })
 
-          // Fetch all chunk Blobs in parallel
-          const chunkBlobs = await Promise.all(
+          // Fetch all available chunk Blobs using Promise.allSettled for resilience
+          const chunkResults = await Promise.allSettled(
             sorted.map(async chunkFile => {
               const fullPath = `${chunkDir}/${chunkFile.name}`
               const { data: pub } = supabase.storage.from('recordings').getPublicUrl(fullPath)
@@ -125,13 +155,19 @@ export function RecordingPlayer({ sessionId }: RecordingPlayerProps) {
             })
           )
 
-          const cleanMime = (recording.mime_type || 'video/webm').split(';')[0] || 'video/webm'
-          const mergedBlob = new Blob(chunkBlobs, { type: cleanMime })
-          const mergedBlobUrl = URL.createObjectURL(mergedBlob)
-          createdBlobUrlRef.current = mergedBlobUrl
-          setVideoUrl(mergedBlobUrl)
-          setVideoLoading(false)
-          return
+          const validBlobs = chunkResults
+            .filter((r): r is PromiseFulfilledResult<Blob> => r.status === 'fulfilled' && Boolean(r.value))
+            .map(r => r.value)
+
+          if (validBlobs.length > 0) {
+            const cleanMime = (recording.mime_type || 'video/webm').split(';')[0] || 'video/webm'
+            const mergedBlob = new Blob(validBlobs, { type: cleanMime })
+            const mergedBlobUrl = URL.createObjectURL(mergedBlob)
+            createdBlobUrlRef.current = mergedBlobUrl
+            setVideoUrl(mergedBlobUrl)
+            setVideoLoading(false)
+            return
+          }
         }
       }
 

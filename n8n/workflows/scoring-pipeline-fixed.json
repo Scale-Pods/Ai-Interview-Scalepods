@@ -1,4 +1,5 @@
 {
+  "name": "Post-Interview Scoring Pipeline Workflow",
   "nodes": [
     {
       "parameters": {
@@ -10,18 +11,24 @@
       "name": "Webhook",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 1,
-      "position": [-1440, 1776],
+      "position": [
+        -1328,
+        4096
+      ],
       "webhookId": "d54e0c24-d773-4ff4-bbbf-04d2f1cc12fa"
     },
     {
       "parameters": {
         "jsCode": "return items.map(item => ({\n  json: {\n    session_id: (item.json.body || item.json).session_id\n  }\n}));"
       },
-      "id": "d0258f68-2620-4093-bb90-3982c474c0ea",
+      "id": "350c63c1-0e19-4484-978a-8515bf6c8aa4",
       "name": "Prep Score",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [-1136, 1776]
+      "position": [
+        -976,
+        4128
+      ]
     },
     {
       "parameters": {
@@ -29,19 +36,25 @@
       },
       "type": "n8n-nodes-base.merge",
       "typeVersion": 3.2,
-      "position": [32, 1824],
-      "id": "ffeee0ce-284a-4488-bc6b-7bb9e4bd592c",
+      "position": [
+        192,
+        4176
+      ],
+      "id": "33ce4da0-fc10-43f6-a77d-6fad882493a7",
       "name": "Merge1"
     },
     {
       "parameters": {
-        "jsCode": "// ─────────────────────────────────────────────────────────────\n// Supabase getAll returns ONE item PER ROW.\n// Use $items() to collect ALL rows from multi-row nodes.\n// ─────────────────────────────────────────────────────────────\n\nconst session = $node[\"Fetch Session1\"]?.json || {};\nconst resume  = $node[\"Fetch Resume\"]?.json    || {};\nconst jd      = $node[\"Fetch JD\"]?.json        || {};\n\nconst questionRows   = ($items(\"Fetch Questions1\") || []).map(i => i.json);\nconst answerRows     = ($items(\"Fetch Answers1\")   || []).map(i => i.json);\nconst proctoringRows = ($items(\"Fetch Proctoring1\") || []).map(i => i.json);\n\n// Build question lookup\nconst questionMap = {};\nquestionRows.forEach(q => { questionMap[q.id] = q; });\n\n// Build answer list for the LLM\nconst answerList = answerRows.map(a => ({\n  question: questionMap[a.question_id]?.question_text || 'Unknown',\n  answer:   a.answer_text || 'No answer provided',\n  type:     questionMap[a.question_id]?.question_type || 'technical'\n}));\n\n// ─── Build structured proctoring summary ───────────────────\nconst criticalEvents = proctoringRows.filter(e => e.severity === 'critical');\nconst warningEvents  = proctoringRows.filter(e => e.severity === 'warning');\n\nconst countByType = {};\nproctoringRows.forEach(e => {\n  countByType[e.event_type] = (countByType[e.event_type] || 0) + 1;\n});\n\n// Risk level based on critical event count\nlet proctoringRisk = 'low';\nif (criticalEvents.length >= 5 || proctoringRows.length >= 20) proctoringRisk = 'high';\nelse if (criticalEvents.length >= 2 || warningEvents.length >= 5) proctoringRisk = 'medium';\n\n// Pick the most notable events (critical first, up to 10)\nconst notableEvents = [\n  ...criticalEvents,\n  ...warningEvents\n].slice(0, 10).map(e => ({\n  type:      e.event_type,\n  severity:  e.severity,\n  timestamp: e.timestamp\n}));\n\nconst proctoringSummary = {\n  total_events:    proctoringRows.length,\n  critical_count:  criticalEvents.length,\n  warning_count:   warningEvents.length,\n  risk_level:      proctoringRisk,\n  by_type:         countByType,\n  notable_events:  notableEvents\n};\n// ────────────────────────────────────────────────────────────\n\nreturn [{\n  json: {\n    session_id:        session.id,\n    candidate_id:      session.candidate_id,\n    answers:           answerList,\n    totalQuestions:    answerList.length,\n    proctoringSummary,\n    resumeText:        resume.raw_text || '',\n    jdText:            jd.raw_text     || '',\n    scoredAt:          new Date().toISOString()\n  }\n}];"
+        "jsCode": "// ─────────────────────────────────────────────────────────────\n// Supabase getAll returns ONE item PER ROW.\n// Use $items() to collect ALL rows from multi-row nodes.\n// ─────────────────────────────────────────────────────────────\n\nconst session = $node[\"Fetch Session1\"]?.json || {};\nconst resume  = $node[\"Fetch Resume\"]?.json    || {};\nconst jd      = $node[\"Fetch JD\"]?.json        || {};\n\nconst questionRows   = ($items(\"Fetch Questions1\") || []).map(i => i.json);\nconst answerRows     = ($items(\"Fetch Answers1\")   || []).map(i => i.json);\nconst proctoringRows = ($items(\"Fetch Proctoring1\") || []).map(i => i.json);\n\n// Build question lookup\nconst questionMap = {};\nquestionRows.forEach(q => { questionMap[q.id] = q; });\n\n// Build answer list for the LLM\nconst answerList = answerRows.map(a => ({\n  question: questionMap[a.question_id]?.question_text || 'Unknown',\n  answer:   a.answer_text || 'No answer provided',\n  type:     questionMap[a.question_id]?.question_type || 'technical'\n}));\n\n// ─── Build structured proctoring summary ───────────────────\nconst criticalEvents = proctoringRows.filter(e => e.severity === 'critical');\nconst warningEvents  = proctoringRows.filter(e => e.severity === 'warning');\n\nconst countByType = {};\nproctoringRows.forEach(e => {\n  countByType[e.event_type] = (countByType[e.event_type] || 0) + 1;\n});\n\n// Risk level based on critical event count\nlet proctoringRisk = 'low';\nif (criticalEvents.length >= 5 || proctoringRows.length >= 20) proctoringRisk = 'high';\nelse if (criticalEvents.length >= 2 || warningEvents.length >= 5) proctoringRisk = 'medium';\n\nconst notableEvents = [\n  ...criticalEvents,\n  ...warningEvents\n].slice(0, 10).map(e => ({\n  type:      e.event_type,\n  severity:  e.severity,\n  timestamp: e.timestamp\n}));\n\nconst proctoringSummary = {\n  total_events:    proctoringRows.length,\n  critical_count:  criticalEvents.length,\n  warning_count:   warningEvents.length,\n  risk_level:      proctoringRisk,\n  by_type:         countByType,\n  notable_events:  notableEvents\n};\n\nconst truncate = (t, max) => !t ? '' : t.length > max ? t.slice(0, max) + '...[truncated]' : t;\n\nconst prompt = `You are a senior technical recruiter writing a post-interview evaluation report. You will receive the job description, candidate resume, all interview Q&A pairs, and a proctoring summary. Your job is to score the candidate fairly, accurately, and specifically — based on what they actually demonstrated in the live interview.\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nSCORING DIMENSIONS (all 0–100)\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\nTECHNICAL SCORE — Knowledge and hands-on experience with required tools and concepts\n  85-100: Consistently specific, demonstrated real usage with named tools, explained HOW and WHY\n  65-84:  Mostly solid with minor gaps on 1-2 questions\n  40-64:  Partial knowledge — surface-level or vague on core JD requirements\n  20-39:  Significant gaps — could not demonstrate experience with most core tools\n  0-19:   Unable to answer most technical questions; resume claims unsupported\n\nCOMMUNICATION SCORE — Clarity, structure, and directness of answers\n  85-100: Clear, well-structured, directly addressed every question\n  65-84:  Mostly clear with occasional rambling or vagueness\n  40-64:  Frequently unclear, off-topic, or hard to follow\n  0-39:   Consistently incoherent, very short, or non-responsive\n\nPROBLEM SOLVING SCORE — Reasoning, trade-off thinking, and scenario handling\n  85-100: Structured thinking, named trade-offs, clear approach to unfamiliar scenarios\n  65-84:  Decent reasoning with some gaps in trade-off awareness\n  40-64:  Surface reasoning — jumped to answers without explaining approach\n  0-39:   No evidence of structured thinking; could not engage with scenario questions\n\nCULTURAL FIT SCORE — Work style, collaboration, values, and environment alignment\n  85-100: Specific examples, clear values matching the role\n  65-84:  Good signals with some vague or generic responses\n  40-64:  Generic or scripted answers, little genuine insight\n  0-39:   Red flags in collaboration style, or refused to engage\n\nAUTHENTICITY SCORE — Consistency between resume claims and live interview answers\n  85-100: Answers strongly corroborated resume claims with specific details\n  65-84:  Minor inconsistencies but generally credible\n  40-64:  Several claims unverified or only partially supported\n  0-39:   Resume claims significantly contradicted or unsupported in interview\n\nOVERALL SCORE — Weighted composite (round to nearest integer):\n  overall_score = (technical × 0.35) + (problem_solving × 0.20) + (communication × 0.15) + (cultural_fit × 0.15) + (authenticity × 0.15)\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nRECOMMENDATION THRESHOLDS\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n  strong_hire: overall_score ≥ 82 AND no critical red flags AND authenticity_score ≥ 70\n  hire:        overall_score 68–81 AND no critical red flags\n  consider:    overall_score 50–67 OR 1-2 moderate red flags but otherwise solid\n  no_go:       overall_score < 50 OR critical red flags OR authenticity_score < 35\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nREFUSAL & \"I DON'T KNOW\" HANDLING\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nCalibrate proportionally — not all refusals are equal:\n\n- A candidate who says \"I'm not familiar with that specific tool, but I'd approach it by...\" shows self-awareness and problem-solving. Do NOT heavily penalise this — it is a positive signal.\n- A candidate who says \"I don't know\" repeatedly with no follow-through or reasoning is a red flag.\n\nFor each refused or non-answered question: reduce the relevant dimension score (technical or problem_solving) by 8-15 points depending on how critical that question was to the JD requirements.\n\nHARD CAPS (only apply when refusals are severe and widespread):\n- Candidate refused or failed to answer 40%+ of ALL questions → overall_score MUST be ≤ 35, recommendation MUST be no_go\n- Candidate refused or failed to answer 40%+ of TECHNICAL questions specifically → technical_score MUST be ≤ 30\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nRESUME VS REALITY\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nFor 4-6 significant resume claims (tools, team sizes, impact metrics, leadership roles), evaluate whether the interview answers supported them:\n\n  \"verified\":      Answer included specific details directly corroborating the claim\n  \"suspicious\":    Strong resume claim but answer was vague, generic, or evasive about it\n  \"contradicted\":  Resume claims X but live answer directly contradicts it (different scope, wrong tool, could not explain it at all)\n  \"unverifiable\":  Claim was not tested in this interview — neither confirmed nor denied\n\nSkip universally common claims (\"used Git\", \"wrote unit tests\", \"worked in agile\"). Focus on specific impact, leadership, ownership, or tool claims.\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nPROCTORING INTEGRITY\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\ntab_switch / window_blur: Candidate may have looked up answers. Reduce authenticity_score by 5-15 depending on frequency. Add to red_flags if high volume.\n\ncopy_paste / keyboard_shortcut: Stronger signal of external help. Reduce authenticity_score by 15-25. Always add to red_flags.\n\nface_absent / face_multiple: Could be a camera issue OR impersonation. Add to red_flags only if 3+ events. Note in rationale.\n\nRisk level:\n  high:    authenticity_score MUST be 0-40. Name specific events in detailed_rationale.\n  medium:  Reduce authenticity_score by up to 20 points. Mention in rationale.\n  low:     No significant findings — no penalty needed.\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nOUTPUT FIELD GUIDANCE\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nstrengths: 3-5 SPECIFIC observations. NOT generic.\nweaknesses: 3-5 specific gaps or concerns with the same specificity.\nred_flags: Each entry must name the specific question or answer that raised it. Return [] if none.\nai_rationale: 2-3 sentence overview — overall fit for the role, key strength, key concern.\ndetailed_rationale: Structured paragraph covering technical fit, communication, authenticity, proctoring, and recommendation reasoning.\n\nJob Description:\n\"\"\"\n${truncate(jd.raw_text || '', 2500)}\n\"\"\"\n\nResume:\n\"\"\"\n${truncate(resume.raw_text || '', 2500)}\n\"\"\"\n\nProctoring Summary:\n${JSON.stringify(proctoringSummary, null, 2)}\n\nInterview Q&A (${answerList.length} questions answered):\n${JSON.stringify(answerList, null, 2)}\n\nReturn ONLY valid JSON:\n{\n  \"technical_score\": 0-100,\n  \"communication_score\": 0-100,\n  \"problem_solving_score\": 0-100,\n  \"cultural_fit_score\": 0-100,\n  \"overall_score\": 0-100,\n  \"authenticity_score\": 0-100,\n  \"strengths\": [\"specific concrete observation\"],\n  \"weaknesses\": [\"specific gap or concern\"],\n  \"red_flag_count\": 0,\n  \"red_flags\": [\"specific flag with question context\"],\n  \"recommendation\": \"strong_hire\" | \"hire\" | \"consider\" | \"no_go\",\n  \"ai_rationale\": \"2-3 sentence overview\",\n  \"detailed_rationale\": \"structured paragraph covering technical, communication, authenticity, proctoring, and recommendation reasoning\",\n  \"resume_vs_reality\": [\n    {\n      \"claim\": \"exact claim from resume\",\n      \"status\": \"verified\" | \"suspicious\" | \"contradicted\" | \"unverifiable\",\n      \"evidence\": \"what the interview answer showed or failed to show\"\n    }\n  ]\n}`;\n\nreturn [{\n  json: {\n    session_id:        session.id,\n    candidate_id:      session.candidate_id,\n    answers:           answerList,\n    totalQuestions:    answerList.length,\n    proctoringSummary,\n    resumeText:        resume.raw_text || '',\n    jdText:            jd.raw_text     || '',\n    prompt,\n    scoredAt:          new Date().toISOString()\n  }\n}];"
       },
-      "id": "c2aaf7c2-9abb-4632-a4a6-18689a3dedc3",
+      "id": "2852f357-2325-4384-b63c-1633238afe5c",
       "name": "Compile Data",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [480, 1840]
+      "position": [
+        640,
+        4192
+      ]
     },
     {
       "parameters": {
@@ -51,14 +64,17 @@
         "genericAuthType": "httpHeaderAuth",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ \n  JSON.stringify({\n    \"model\": \"gpt-4.1-mini\",\n    \"messages\": [\n      {\n        \"role\": \"system\",\n        \"content\": \"You are a senior technical recruiter evaluating a candidate's live interview answers against the job description and resume. STRICT SCORING RUBRIC (MANDATORY): 1. NON-ANSWER & REFUSAL PENALTY: Answers like 'I don't know', 'I have to read upon this', 'not sure', or 1-3 word non-responses MUST be scored ZERO (0) for technical & problem solving depth. Do NOT give partial credit or benefit of the doubt for 'honesty'. Candidate performance in the live interview TRUMPS resume claims. 2. REFUSAL SCORE CAPS: If a candidate answers 'I don't know' or refuses 30%+ of questions, technical_score MUST be 0-25, overall_score MUST be 0-25, and recommendation MUST BE strictly 'no_go'. 3. RESUME VS REALITY: If candidate claims a tool on resume but answers 'I don't know' when asked about it in the interview, mark claim status as 'contradicted' with evidence. 4. PROCTORING INTEGRITY: You will receive a proctoring_summary containing behavioural integrity signals captured during the interview. Use this as follows: (a) tab_switch / window_blur events suggest the candidate was looking up answers — factor this into authenticity_score and add to red_flags. (b) copy_paste / keyboard_shortcut events are strong signals of cheating — add to red_flags and reduce authenticity_score significantly. (c) face_absent / face_multiple events may indicate an impersonator — note in red_flags and reduce authenticity_score. (d) If proctoring risk_level is 'high', authenticity_score MUST be 0-40 and must be noted in detailed_rationale. (e) If risk_level is 'medium', reduce authenticity_score by up to 20 points and mention in rationale. (f) If risk_level is 'low', proctoring had no significant findings — no penalty needed. Return JSON format: { \\\"technical_score\\\": number, \\\"communication_score\\\": number, \\\"problem_solving_score\\\": number, \\\"cultural_fit_score\\\": number, \\\"overall_score\\\": number, \\\"authenticity_score\\\": number, \\\"strengths\\\": string[], \\\"weaknesses\\\": string[], \\\"red_flag_count\\\": number, \\\"red_flags\\\": string[], \\\"recommendation\\\": \\\"strong_hire\\\" | \\\"hire\\\" | \\\"consider\\\" | \\\"no_go\\\", \\\"ai_rationale\\\": \\\"2-3 sentence overview\\\", \\\"detailed_rationale\\\": \\\"detailed explanation of fit, authenticity, and proctoring findings\\\", \\\"resume_vs_reality\\\": [{ \\\"claim\\\": string, \\\"status\\\": \\\"verified\\\" | \\\"suspicious\\\" | \\\"unverifiable\\\" | \\\"contradicted\\\", \\\"evidence\\\": string }] }\"\n      },\n      {\n        \"role\": \"user\",\n        \"content\": \"Job Description:\\n\" + $json.jdText + \"\\n\\nResume:\\n\" + $json.resumeText + \"\\n\\nProctoring Summary:\\n\" + JSON.stringify($json.proctoringSummary) + \"\\n\\nAnswers:\\n\" + JSON.stringify($json.answers)\n      }\n    ],\n    \"response_format\": { \"type\": \"json_object\" }\n  })\n}}",
+        "jsonBody": "={{\n  {\n    \"model\": \"gpt-4.1-mini\",\n    \"messages\": [\n      {\n        \"role\": \"user\",\n        \"content\": $json.prompt\n      }\n    ],\n    \"response_format\": { \"type\": \"json_object\" }\n  }\n}}",
         "options": {}
       },
-      "id": "93cf764d-e295-4d21-835f-cceb4bfa8aea",
+      "id": "a36dafb8-0bdd-4420-8ac5-cfe43f0ba37a",
       "name": "Score via LLM",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [672, 1840],
+      "position": [
+        832,
+        4192
+      ],
       "credentials": {
         "httpHeaderAuth": {
           "id": "WlHKo4N02BhjQPJK",
@@ -92,11 +108,14 @@
           ]
         }
       },
-      "id": "360495a4-59a6-414b-bd23-fa1adc4f9937",
+      "id": "97dc1e76-6915-4924-963d-930ef2c730dd",
       "name": "Update Session Status",
       "type": "n8n-nodes-base.supabase",
       "typeVersion": 1,
-      "position": [1280, 1840],
+      "position": [
+        1440,
+        4192
+      ],
       "credentials": {
         "supabaseApi": {
           "id": "wMaaAewNUY90iUpo",
@@ -110,11 +129,14 @@
         "responseBody": "={{ {\n  session_id: $json.session_id,\n  status: 'completed',\n  overall_score: $node['Extract Score1'].json.overall_score,\n  recommendation: $node['Extract Score1'].json.recommendation\n} }}",
         "options": {}
       },
-      "id": "69173481-bd32-4013-a5e7-5ed103dff643",
+      "id": "388b86b0-0b70-4a10-a361-2ef41ca8f8d4",
       "name": "Build Response",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1,
-      "position": [1488, 1840]
+      "position": [
+        1648,
+        4192
+      ]
     },
     {
       "parameters": {
@@ -130,11 +152,14 @@
           ]
         }
       },
-      "id": "6bda2641-a3ed-4021-89c2-b4d11a48ba6b",
+      "id": "236f9b27-9e72-432d-8e67-377237dbc592",
       "name": "Fetch Resume",
       "type": "n8n-nodes-base.supabase",
       "typeVersion": 1,
-      "position": [-448, 2032],
+      "position": [
+        -288,
+        4384
+      ],
       "credentials": {
         "supabaseApi": {
           "id": "wMaaAewNUY90iUpo",
@@ -156,11 +181,14 @@
           ]
         }
       },
-      "id": "fdda587a-0bfa-43d1-850c-5ff159c68090",
+      "id": "ee45f475-2b1b-4b70-bd00-efab528fdc2f",
       "name": "Fetch JD",
       "type": "n8n-nodes-base.supabase",
       "typeVersion": 1,
-      "position": [-448, 2256],
+      "position": [
+        -288,
+        4608
+      ],
       "credentials": {
         "supabaseApi": {
           "id": "wMaaAewNUY90iUpo",
@@ -182,11 +210,14 @@
           ]
         }
       },
-      "id": "aa499589-a884-40fc-9b04-b211ee59552c",
+      "id": "3d01c033-7b10-42b2-9b71-3d13be2106b9",
       "name": "Fetch Session1",
       "type": "n8n-nodes-base.supabase",
       "typeVersion": 1,
-      "position": [-912, 2016],
+      "position": [
+        -752,
+        4368
+      ],
       "credentials": {
         "supabaseApi": {
           "id": "wMaaAewNUY90iUpo",
@@ -208,11 +239,14 @@
           ]
         }
       },
-      "id": "aa5d9936-14ee-4aa4-bc5b-72931bef945b",
+      "id": "72d7d865-08f0-4e1a-af1f-96b2e8e8adbb",
       "name": "Fetch Questions1",
       "type": "n8n-nodes-base.supabase",
       "typeVersion": 1,
-      "position": [-448, 1424],
+      "position": [
+        -288,
+        3776
+      ],
       "credentials": {
         "supabaseApi": {
           "id": "wMaaAewNUY90iUpo",
@@ -234,11 +268,14 @@
           ]
         }
       },
-      "id": "8d616418-d7e3-402b-8edc-09ba6815ecea",
+      "id": "95d87b01-82d7-4282-b7f4-2bd7d22e5304",
       "name": "Fetch Answers1",
       "type": "n8n-nodes-base.supabase",
       "typeVersion": 1,
-      "position": [-448, 1824],
+      "position": [
+        -288,
+        4176
+      ],
       "credentials": {
         "supabaseApi": {
           "id": "wMaaAewNUY90iUpo",
@@ -250,11 +287,14 @@
       "parameters": {
         "jsCode": "const content = JSON.parse($json.choices[0].message.content);\nconst compileData = $node[\"Compile Data\"] ? $node[\"Compile Data\"].json : ($node[\"Build Prompt\"] ? $node[\"Build Prompt\"].json : {});\nconst answers = compileData.answers || [];\n\n// Identify \"I don't know\" and non-answer responses\nconst isRefusal = (ans) => {\n  const clean = (ans || '').toLowerCase().trim();\n  return (\n    clean.length === 0 ||\n    clean === 'no answer recorded' ||\n    clean.includes(\"i don't know\") ||\n    clean.includes(\"dont know\") ||\n    clean.includes(\"do not know\") ||\n    clean.includes(\"read upon this\") ||\n    clean.includes(\"have to read\") ||\n    clean.includes(\"not sure\") ||\n    clean.includes(\"no idea\")\n  );\n};\n\nconst refusalCount = answers.filter(a => isRefusal(a.answer)).length;\nconst totalAnswers = Math.max(1, answers.length);\nconst refusalRate = refusalCount / totalAnswers;\n\nlet technical_score = content.technical_score ?? 0;\nlet communication_score = content.communication_score ?? 0;\nlet problem_solving_score = content.problem_solving_score ?? 0;\nlet cultural_fit_score = content.cultural_fit_score ?? 0;\nlet overall_score = content.overall_score ?? 0;\nlet authenticity_score = content.authenticity_score ?? 0;\nlet recommendation = content.recommendation || 'consider';\n\n// Enforce refusal score caps (clamping scores if refusal rate >= 30%)\nif (refusalRate >= 0.5) {\n  technical_score = Math.min(technical_score, 15);\n  problem_solving_score = Math.min(problem_solving_score, 15);\n  overall_score = Math.min(overall_score, 15);\n  recommendation = 'no_go';\n} else if (refusalRate >= 0.3) {\n  technical_score = Math.min(technical_score, 30);\n  problem_solving_score = Math.min(problem_solving_score, 30);\n  overall_score = Math.min(overall_score, 30);\n  recommendation = 'no_go';\n}\n\nreturn [{\n  json: {\n    session_id: compileData.session_id,\n    technical_score,\n    communication_score,\n    problem_solving_score,\n    cultural_fit_score,\n    overall_score,\n    authenticity_score,\n    red_flag_count: content.red_flag_count ?? 0,\n    red_flags: content.red_flags || [],\n    resume_vs_reality: content.resume_vs_reality || [],\n    strengths: content.strengths || [],\n    weaknesses: content.weaknesses || [],\n    recommendation,\n    ai_rationale: content.ai_rationale || '',\n    detailed_rationale: content.detailed_rationale || '',\n    scoring_model_version: 'gpt-4.1-mini-v1',\n    evaluated_at: new Date().toISOString()\n  }\n}];\n"
       },
-      "id": "db577766-993b-4bb5-bfdd-ec909d6c7ef5",
+      "id": "af811145-d441-48a6-835b-0e7343fe12cb",
       "name": "Extract Score1",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [880, 1840]
+      "position": [
+        1040,
+        4192
+      ]
     },
     {
       "parameters": {
@@ -336,11 +376,14 @@
           ]
         }
       },
-      "id": "233efff8-874c-4bce-a01c-ca33feb0465d",
+      "id": "3fa9fa15-7afd-4bae-b01c-2a284d064619",
       "name": "Store Scorecard1",
       "type": "n8n-nodes-base.supabase",
       "typeVersion": 1,
-      "position": [1088, 1840],
+      "position": [
+        1248,
+        4192
+      ],
       "credentials": {
         "supabaseApi": {
           "id": "wMaaAewNUY90iUpo",
@@ -362,11 +405,14 @@
           ]
         }
       },
-      "id": "b1aaaea0-c5fe-45bd-830b-18b6e9f7e615",
+      "id": "a6de4e86-0b70-4801-8021-75b8f226e7ce",
       "name": "Fetch Proctoring1",
       "type": "n8n-nodes-base.supabase",
       "typeVersion": 1,
-      "position": [-608, 1664],
+      "position": [
+        -448,
+        4016
+      ],
       "alwaysOutputData": true,
       "credentials": {
         "supabaseApi": {
@@ -381,8 +427,11 @@
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [-384, 1664],
-      "id": "a1833270-adc3-42fb-9114-0fcc22775e66",
+      "position": [
+        -224,
+        4016
+      ],
+      "id": "eecacd82-0771-4d10-82d6-bf7841f45f1f",
       "name": "Code in JavaScript",
       "executeOnce": false
     }
@@ -585,7 +634,7 @@
     }
   },
   "pinData": {},
-  "meta": {
-    "instanceId": "11e350345aae172743fe2665ba36f76304fbd6b68282474d7d08206f6a010061"
+  "settings": {
+    "executionOrder": "v1"
   }
 }

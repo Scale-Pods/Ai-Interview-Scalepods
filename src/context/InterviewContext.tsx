@@ -43,6 +43,14 @@ interface InterviewContextType {
 const InterviewContext = createContext<InterviewContextType | null>(null)
 const INTRO_QUESTION_TEXT = "Hello! I am your AI Interviewer today. Welcome to your interview. To start off, how are you doing today?"
 
+function normalizeQuestionType(type?: string): 'technical' | 'behavioral' | 'situational' | 'cultural' {
+  const t = String(type || '').toLowerCase().trim()
+  if (t === 'behavioral') return 'behavioral'
+  if (t === 'situational' || t === 'gap_probe') return 'situational'
+  if (t === 'cultural') return 'cultural'
+  return 'technical'
+}
+
 export function InterviewProvider({ children }: { children: React.ReactNode }) {
   const [session, setSession] = useState<InterviewSession | null>(null)
   const [questions, setQuestions] = useState<InterviewQuestion[]>([])
@@ -513,72 +521,32 @@ export function InterviewProvider({ children }: { children: React.ReactNode }) {
         lastTurnQuestionIdRef.current = nextPendingQuestion.id
         setCurrentQuestionId(nextPendingQuestion.id)
 
-        // For non-technical questions (behavioral, situational, cultural fit), bypass the LLM entirely.
-        // Just use a simple, warm static acknowledgment and proceed immediately.
-        if (nextPendingQuestion.question_type !== 'technical') {
-          const staticAcks = [
-            "Got it, thank you.",
-            "Thanks for sharing that.",
-            "That makes sense, thank you.",
-            "Appreciate you sharing that.",
-            "Thank you."
-          ]
-          const ackText = staticAcks[nextPendingQuestion.order_index % staticAcks.length]
-          setCurrentTurn({
-            interviewer_text: `${ackText} ${nextPendingQuestion.question_text}`,
-            question_text: nextPendingQuestion.question_text,
-            turn_type: 'question',
-            question_type: nextPendingQuestion.question_type,
-            should_continue: true
-          })
-          return
-        }
+        // When moving to the next question with no follow-up required, use a clean, natural,
+        // concise recruiter transition so the system does not repeat or re-hash previous acknowledgments.
+        const transitions = nextPendingQuestion.question_type === 'technical'
+          ? [
+              "Got it, thank you. Moving to the next technical topic.",
+              "Thanks for sharing those details. Next up,",
+              "That makes sense, thank you. Let's move to the next question.",
+              "Appreciate those details. Moving forward,",
+              "Got it, thank you."
+            ]
+          : [
+              "Got it, thank you.",
+              "Thanks for sharing that.",
+              "That makes sense, thank you.",
+              "Appreciate you sharing that.",
+              "Thank you."
+            ]
 
-        // Try to wrap the pre-generated question with a natural acknowledgment (Technical questions only)
-        try {
-          const conversationalTurn = await generateInterviewerTurn(
-            resumeText,
-            jdText,
-            history,
-            jobQuestionsAsked,
-            candidateAnalysisRef.current,
-            authenticitySignalsRef.current,
-            lastNote,
-            followUpCount,
-            [],          // pass empty pending list so LLM doesn't confuse them
-            false,       // no follow-up allowed here
-            nextPlanItem,
-            maxPrimaryQuestions,
-            0,           // maxFollowUps = 0 for this wrapper call
-            nextPendingQuestion.question_text  // targetQuestion to wrap
-          )
-          if (conversationalTurn.turn_type === 'closing') {
-            setCurrentTurn({
-              ...conversationalTurn,
-              question_text: '',
-              should_continue: false
-            })
-            return
-          }
-          setCurrentTurn({
-            ...conversationalTurn,
-            // Always preserve the original question_text so the AnswerRecorder
-            // shows the correct stored question, not the full LLM utterance.
-            question_text: nextPendingQuestion.question_text,
-            turn_type: 'question',
-            question_type: nextPendingQuestion.question_type,
-            should_continue: true
-          })
-        } catch {
-          // LLM unavailable — fall back to the raw question without acknowledgment
-          setCurrentTurn({
-            interviewer_text: nextPendingQuestion.question_text,
-            question_text: nextPendingQuestion.question_text,
-            turn_type: 'question',
-            question_type: nextPendingQuestion.question_type,
-            should_continue: true
-          })
-        }
+        const ackText = transitions[nextPendingQuestion.order_index % transitions.length]
+        setCurrentTurn({
+          interviewer_text: `${ackText} ${nextPendingQuestion.question_text}`,
+          question_text: nextPendingQuestion.question_text,
+          turn_type: 'question',
+          question_type: nextPendingQuestion.question_type,
+          should_continue: true
+        })
         return
       }
 
@@ -648,13 +616,14 @@ export function InterviewProvider({ children }: { children: React.ReactNode }) {
           setCurrentQuestionIndex(questionsData.findIndex(question => question.id === insertedQuestion.id))
         } else {
           // Dynamic new question — append at the end
+          const safeType = normalizeQuestionType(turn.question_type)
           const insertionIndex = latestQuestions.length
           const { data: insertedQuestion, error: insertError } = await supabasePublic
             .from('interview_questions_ai_interview')
             .insert({
               session_id: session.id,
               question_text: turn.question_text,
-              question_type: turn.question_type || 'technical',
+              question_type: safeType,
               order_index: insertionIndex,
               source: 'llm_ts_dynamic',
               plan_item_id: nextPlanItem?.id || null,

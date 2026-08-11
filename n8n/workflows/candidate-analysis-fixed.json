@@ -1,5 +1,5 @@
 {
-  "name": "Combined Candidate Analysis Webhook",
+  "name": "Candidate Analysis Workflow",
   "nodes": [
     {
       "parameters": {
@@ -8,22 +8,82 @@
         "responseMode": "responseNode",
         "options": {}
       },
-      "id": "webhook-analyze-candidate",
+      "id": "7663e82d-769a-457d-a169-e1ba327b48f5",
       "name": "Webhook - Analyze Candidate",
       "type": "n8n-nodes-base.webhook",
       "typeVersion": 1,
-      "position": [-950, 300],
+      "position": [
+        -880,
+        784
+      ],
       "webhookId": "97a84cfc-6272-4c11-bfd7-b1d0352e609e"
     },
     {
       "parameters": {
-        "jsCode": "const input = $input.first().json;\nconst resumeId = input.resumeId;\nconst jdId = input.jdId;\nconst isValidUuid = (id) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);\nreturn [{\n  json: {\n    resumeId: resumeId && isValidUuid(resumeId) ? resumeId : \"00000000-0000-0000-0000-000000000000\",\n    jdId: jdId && isValidUuid(jdId) ? jdId : \"00000000-0000-0000-0000-000000000000\"\n  }\n}];"
+        "jsCode": "const resumeText = $node[\"Fetch Resume (Combined)1\"].json.raw_text;\nconst jdText = $node[\"Fetch JD (Combined)1\"].json.raw_text;\nconst truncate = (text, max) => { if (!text) return ''; return text.length > max ? text.slice(0, max) + '...[truncated]' : text; };\n\nconst jdTrimmed = truncate(jdText || 'No job description provided.', 3000);\nconst resumeTrimmed = truncate(resumeText || 'No resume provided.', 3000);\n\nconst prompt = `You are a senior technical recruiter and expert interviewer preparing for a live screening call with a candidate. Your job is to deeply understand their fit, surface risks, and prepare the right interview questions.\n\nJob Description:\n\"\"\"\n${jdTrimmed}\n\"\"\"\n\nCandidate Resume:\n\"\"\"\n${resumeTrimmed}\n\"\"\"\n\nPerform FOUR analyses and return a single combined JSON object matching the schema below.\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nANALYSIS 1: EXTRACTED TOOLS\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nExtract 6-10 CONCRETE, specifically named tools, technologies, languages, or frameworks from the JD.\n\nRULES:\n- Extract NAMED tools only. NOT abstract categories.\n  ✅ GOOD: \"React\", \"PostgreSQL\", \"Docker\", \"TypeScript\", \"Redis\", \"Kubernetes\", \"FastAPI\"\n  ❌ BAD: \"frontend framework\", \"cloud\", \"databases\", \"agile\", \"APIs\" (too vague)\n- importance: \"must_have\" if listed as required/essential in JD, \"nice_to_have\" if preferred/bonus\n- mentioned_in_resume: true if the tool name appears ANYWHERE in the resume text\n- resume_context: the exact sentence/phrase from the resume where it appears, or null\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nANALYSIS 2: FIT ANALYSIS\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nList the specific skills, tools, and competencies relevant to this role.\n\nClassification rules:\n- \"match\": JD requires it AND the resume shows clear evidence → priority 1 (critical) to 3 (supporting)\n- \"gap\": JD requires it BUT resume shows NO evidence → priority 1-2 only (only flag genuine gaps)\n- \"strength\": Resume claims it but JD doesn't ask for it → priority 4-5\n\nIMPORTANT: Do NOT over-flag gaps. If the candidate is 80%+ aligned, flagged_gaps should be few or none.\nPriority scale: 1 = most critical to the role, 5 = least relevant\n\nMap 3-5 specific resume projects/roles to JD requirements — be specific about what the candidate actually did.\n\nWrite a clear 2-3 sentence summary: (1) overall fit level, (2) strongest signals, (3) the main concern if any.\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nANALYSIS 3: TRUTH AUDIT\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nIdentify 3-5 resume claims that warrant probing during the interview.\n\nFocus on: leadership claims without specifics, impact claims without metrics, tool claims with no project context, team sizes or ownership claims.\n\nDO NOT flag:\n- Things every developer does (e.g. \"used Git\", \"wrote unit tests\", \"followed agile\")\n- Skills listed in skills section without project claims\n- Generic soft skills\n\nFor each claim: write a probe_question that sounds like a natural interviewer question (curious, not accusatory). Rate suspicion_level based on how likely the claim is exaggerated.\n\nWrite a 1-2 sentence credibility overview.\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nANALYSIS 4: DRAFT QUESTIONS (EXACTLY 10)\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nGenerate exactly 10 draft interview questions for a PRACTICAL SCREENING ROUND (not a deep technical interview).\n\nCOMPOSITION:\n- Q1-Q3 (Conceptual/Technical): Ask about understanding of the 3 most important must_have tools from the JD. Ask what problem the tool solves, when they'd use it, or a key trade-off — not memorization.\n- Q4-Q5 (Applied/Scenario): Real-world scenario or small debugging/implementation task using a key tool from the JD. Practical — \"how would you approach X?\" not \"explain algorithm Y\".\n- Q6-Q7 (Resume Depth): Pick 2 specific projects/roles from the resume and probe the candidate's actual contribution, decisions made, and outcomes. Reference the JD requirement it maps to.\n- Q8 (Gap or Second Depth): If a real skill gap exists, ask how they'd approach learning/bridging it. If no gaps, ask a second resume-depth question.\n- Q9-Q10 (Cultural): Work style, collaboration, handling disagreement, how they give/receive feedback, what environment they thrive in.\n\nRULES:\n- Always name the SPECIFIC tool (e.g. \"React\", \"PostgreSQL\") — never say \"the database\" or \"your framework\"\n- Keep language at a screening difficulty: verify understanding, not deep system design or algorithmic mastery\n- Each question should take 2-4 minutes to answer — not a yes/no, not an essay\n\nReturn ONLY a valid JSON object matching this exact schema, no other text:\n{\n  \"extractedTools\": [\n    {\n      \"name\": \"React\",\n      \"category\": \"Frontend\",\n      \"importance\": \"must_have\",\n      \"mentioned_in_resume\": true,\n      \"resume_context\": \"Built reusable components using React at Acme Corp\"\n    }\n  ],\n  \"fitAnalysis\": {\n    \"skills\": [\n      {\n        \"skill\": \"React\",\n        \"source\": \"both\",\n        \"status\": \"match\",\n        \"evidence\": \"3 years of React at Acme, JD lists React as required\",\n        \"priority\": 1\n      }\n    ],\n    \"projectMappings\": [\n      {\n        \"resumeProject\": \"Acme Dashboard (2023)\",\n        \"relatedJdRequirement\": \"Build internal tooling with React\",\n        \"notes\": \"Candidate led front-end build — strong transferability\"\n      }\n    ],\n    \"summary\": \"Strong technical match for core JD requirements. Main gap is no cloud deployment experience. Resume credibility appears solid.\"\n  },\n  \"truthAudit\": {\n    \"claims\": [\n      {\n        \"claim\": \"Led a team of 5 engineers\",\n        \"source\": \"Acme Corp — Project X\",\n        \"suspicion_level\": \"medium\",\n        \"probe_question\": \"You mentioned leading a team of 5 at Acme — were you the engineering manager, tech lead, or project coordinator? What did day-to-day leadership look like for you?\",\n        \"rationale\": \"Leadership claim is vague — no mention of reports, hiring, or technical decisions\"\n      }\n    ],\n    \"summary\": \"Resume is generally credible. One leadership claim and one impact claim warrant light probing.\"\n  },\n  \"draftQuestions\": [\n    {\n      \"question_text\": \"Can you explain what problem React's virtual DOM solves, and when you might choose NOT to use React for a project?\",\n      \"question_type\": \"technical\",\n      \"strategy\": \"Conceptual — tests understanding of React's core trade-offs, not just syntax\"\n    }\n  ]\n}`;\n\nreturn [{ json: { prompt } }];"
       },
-      "id": "validate-ids-combined",
-      "name": "Validate IDs (Combined)",
+      "id": "db972933-7a5c-461e-8b14-816eb27b7f9b",
+      "name": "Build Combined Prompt",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
-      "position": [-800, 300]
+      "position": [
+        -176,
+        784
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{\n  {\n    \"model\": \"gpt-4.1-mini\",\n    \"messages\": [\n      {\n        \"role\": \"user\",\n        \"content\": $json.prompt\n      }\n    ],\n    \"response_format\": { \"type\": \"json_object\" }\n  }\n}}",
+        "options": {}
+      },
+      "id": "c2ca5a2b-7747-4407-b5bb-86ee9ac1f6cb",
+      "name": "OpenAI - Completion (Combined)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        32,
+        784
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "WlHKo4N02BhjQPJK",
+          "name": "Header Auth account 7"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const content = JSON.parse($input.first().json.choices[0].message.content);\nreturn [{ json: content }];"
+      },
+      "id": "6c013f59-b3b1-4399-a401-ead4bc376ae2",
+      "name": "Parse Response (Combined)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        784
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "d688c546-dfa6-4c54-8b5f-986c1b1032a7",
+      "name": "Response - Analyze Candidate",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        432,
+        784
+      ]
     },
     {
       "parameters": {
@@ -34,16 +94,19 @@
             {
               "keyName": "id",
               "condition": "eq",
-              "keyValue": "={{ $json.resumeId }}"
+              "keyValue": "={{ $json.body.resumeId }}"
             }
           ]
         }
       },
-      "id": "fetch-resume-combined",
-      "name": "Fetch Resume (Combined)",
+      "id": "85a7ea16-58b6-41b0-a7db-768c9007ff5a",
+      "name": "Fetch Resume (Combined)1",
       "type": "n8n-nodes-base.supabase",
       "typeVersion": 1,
-      "position": [-650, 200],
+      "position": [
+        -528,
+        672
+      ],
       "credentials": {
         "supabaseApi": {
           "id": "wMaaAewNUY90iUpo",
@@ -60,16 +123,19 @@
             {
               "keyName": "id",
               "condition": "eq",
-              "keyValue": "={{ $json.jdId }}"
+              "keyValue": "={{ $json.body.jdId }}"
             }
           ]
         }
       },
-      "id": "fetch-jd-combined",
-      "name": "Fetch JD (Combined)",
+      "id": "d5abb892-fcb5-4529-a1f5-b2efd5dd769d",
+      "name": "Fetch JD (Combined)1",
       "type": "n8n-nodes-base.supabase",
       "typeVersion": 1,
-      "position": [-650, 400],
+      "position": [
+        -528,
+        880
+      ],
       "credentials": {
         "supabaseApi": {
           "id": "wMaaAewNUY90iUpo",
@@ -79,101 +145,102 @@
     },
     {
       "parameters": {},
-      "id": "merge-supabase-fetches",
-      "name": "Merge Supabase Fetches",
+      "id": "02932113-7daa-4048-917c-511dce0d7930",
+      "name": "Merge Supabase Fetches1",
       "type": "n8n-nodes-base.merge",
       "typeVersion": 3.2,
-      "position": [-500, 300]
-    },
-    {
-      "parameters": {
-        "jsCode": "const resumeText = $node[\"Fetch Resume (Combined)\"].json.raw_text;\nconst jdText = $node[\"Fetch JD (Combined)\"].json.raw_text;\nconst truncate = (text, max) => { if (!text) return ''; return text.length > max ? text.slice(0, max) + '...[truncated]' : text; };\nconst jdTrimmed = truncate(jdText || 'No job description provided.', 2000);\nconst resumeTrimmed = truncate(resumeText || 'No resume provided.', 2000);\nconst prompt = `You are a senior technical recruiter and expert interviewer conducting a pre-interview analysis. Analyze this candidate's resume against the Job Description.\\n\\nJob Description:\\n\\\"\\\"\\\"\\n${jdTrimmed}\\n\\\"\\\"\\\"\\n\\nCandidate Resume:\\n\\\"\\\"\\\"\\n${resumeTrimmed}\\n\\\"\\\"\\\"\\n\\nPerform three analyses and return a single combined JSON object matching the exact schema specified below.\\n\\nANALYSIS 1: FIT ANALYSIS\\n- List specific skills, tools, languages, frameworks, or techniques required by the JD or claimed in the resume.\\n- Classify each as: \\\"match\\\" (required and evidenced), \\\"gap\\\" (required but no evidence), or \\\"strength\\\" (bonus claim not asked in JD).\\n- Assign priority from 1 (most central to JD) to 5.\\n- Map 3-4 specific resume projects or experiences to JD requirements.\\n- Write a 2-3 sentence summary of candidate fit.\\n\\nANALYSIS 2: TRUTH AUDIT\\n- Spot 4-6 specific resume claims that are common targets for exaggeration (vague contribution, missing metrics, team leadership claims).\\n- For each claim, provide a targeted probe question to verify the experience.\\n- Write a 1-2 sentence overview of resume credibility.\\n\\nANALYSIS 3: DRAFT QUESTIONS (EXACTLY 10 QUESTIONS)\\n- Generate exactly 10 draft interview questions matching these stages:\\n  - Q1-3 (Conceptual): Foundational concepts/principles of key tools.\\n  - Q4-5 (Applied): Practical hands-on scenarios/debugging.\\n  - Q6-8 (Gaps): Match resume projects against JD requirements, probing gaps.\\n  - Q9-10 (Cultural fit): Work style, teamwork, collaboration.\\n- STRICT CEILING: Easy-to-medium practical screening round. Do not ask about distributed systems, scale, framework internals, or low-level memory/algorithms.\\n- Always explicitly name the specific tool/technology (e.g. \\\"React\\\", \\\"Docker\\\") in the question.\\n\\nReturn ONLY a valid JSON object matching this schema, nothing else:\\n{\\n  \\\"fitAnalysis\\\": {\\n    \\\"skills\\\": [\\n      { \\\"skill\\\": \\\"string\\\", \\\"source\\\": \\\"jd_required\\\" | \\\"resume_claimed\\\" | \\\"both\\\", \\\"status\\\": \\\"match\\\" | \\\"gap\\\" | \\\"strength\\\", \\\"evidence\\\": \\\"string\\\", \\\"priority\\\": 1 }\\n    ],\\n    \\\"projectMappings\\\": [\\n      { \\\"resumeProject\\\": \\\"string\\\", \\\"relatedJdRequirement\\\": \\\"string\\\", \\\"notes\\\": \\\"string\\\" }\\n    ],\\n    \\\"summary\\\": \\\"string\\\"\\n  },\\n  \\\"truthAudit\\\": {\\n    \\\"claims\\\": [\\n      { \\\"claim\\\": \\\"string\\\", \\\"source\\\": \\\"string\\\", \\\"suspicion_level\\\": \\\"low\\\" | \\\"medium\\\" | \\\"high\\\", \\\"probe_question\\\": \\\"string\\\", \\\"rationale\\\": \\\"string\\\" }\\n    ],\\n    \\\"summary\\\": \\\"string\\\"\\n  },\\n  \\\"draftQuestions\\\": [\\n    { \\\"question_text\\\": \\\"string\\\", \\\"question_type\\\": \\\"technical\\\" | \\\"behavioral\\\" | \\\"situational\\\" | \\\"cultural\\\", \\\"strategy\\\": \\\"string\\\" }\\n  ]\\n}`;\nreturn [{ json: { prompt } }];"
-      },
-      "id": "build-prompt-combined",
-      "name": "Build Combined Prompt",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [-300, 300]
-    },
-    {
-      "parameters": {
-        "method": "POST",
-        "url": "https://api.openai.com/v1/chat/completions",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={\n  {\n    \"model\": \"gpt-4.1-mini\",\n    \"messages\": [\n      {\n        \"role\": \"user\",\n        \"content\": $json.prompt\n      }\n    ],\n    \"response_format\": { \"type\": \"json_object\" }\n  }\n}",
-        "options": {}
-      },
-      "id": "openai-completion-combined",
-      "name": "OpenAI - Completion (Combined)",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
-      "position": [-100, 300],
-      "credentials": {
-        "httpHeaderAuth": {
-          "id": "WlHKo4N02BhjQPJK",
-          "name": "Header Auth account 7"
-        }
-      }
-    },
-    {
-      "parameters": {
-        "jsCode": "const content = JSON.parse($input.first().json.choices[0].message.content);\nreturn [{ json: content }];"
-      },
-      "id": "parse-response-combined",
-      "name": "Parse Response (Combined)",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 2,
-      "position": [100, 300]
-    },
-    {
-      "parameters": {
-        "respondWith": "json",
-        "responseBody": "={{ $json }}",
-        "options": {}
-      },
-      "id": "response-analyze-candidate",
-      "name": "Response - Analyze Candidate",
-      "type": "n8n-nodes-base.respondToWebhook",
-      "typeVersion": 1,
-      "position": [300, 300]
+      "position": [
+        -368,
+        784
+      ]
     }
   ],
   "connections": {
     "Webhook - Analyze Candidate": {
       "main": [
-        [{ "node": "Validate IDs (Combined)", "type": "main", "index": 0 }]
+        [
+          {
+            "node": "Fetch Resume (Combined)1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch JD (Combined)1",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
-    },
-    "Validate IDs (Combined)": {
-      "main": [
-        [{ "node": "Fetch Resume (Combined)", "type": "main", "index": 0 }],
-        [{ "node": "Fetch JD (Combined)", "type": "main", "index": 0 }]
-      ]
-    },
-    "Fetch Resume (Combined)": {
-      "main": [[{ "node": "Merge Supabase Fetches", "type": "main", "index": 0 }]]
-    },
-    "Fetch JD (Combined)": {
-      "main": [[{ "node": "Merge Supabase Fetches", "type": "main", "index": 1 }]]
-    },
-    "Merge Supabase Fetches": {
-      "main": [[{ "node": "Build Combined Prompt", "type": "main", "index": 0 }]]
     },
     "Build Combined Prompt": {
-      "main": [[{ "node": "OpenAI - Completion (Combined)", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "OpenAI - Completion (Combined)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "OpenAI - Completion (Combined)": {
-      "main": [[{ "node": "Parse Response (Combined)", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Parse Response (Combined)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Parse Response (Combined)": {
-      "main": [[{ "node": "Response - Analyze Candidate", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Response - Analyze Candidate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Resume (Combined)1": {
+      "main": [
+        [
+          {
+            "node": "Merge Supabase Fetches1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch JD (Combined)1": {
+      "main": [
+        [
+          {
+            "node": "Merge Supabase Fetches1",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Supabase Fetches1": {
+      "main": [
+        [
+          {
+            "node": "Build Combined Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "pinData": {},
-  "meta": {
-    "templateCredsSetupCompleted": true
+  "settings": {
+    "executionOrder": "v1"
   }
 }

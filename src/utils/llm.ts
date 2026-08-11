@@ -78,46 +78,15 @@ export async function analyzeResumeJdAlignment(
 
   if (!resumeText || !jdText) return fallback
 
-  const prompt = `You are a senior technical recruiter analyzing the alignment between a candidate's resume and a job description.
-Your goal is to detect GENUINE gaps — domain mismatches, experience-level gaps, or stack discrepancies — that an HR recruiter would probe during an initial screening call.
-
-RULES:
-1. ONLY flag genuine, real gaps supported by the resume and JD text (e.g. non-technical sales/BD experience applying for software engineer, or 2 years candidate applying for 8+ year staff role, or backend candidate applying for mobile iOS role).
-2. DO NOT invent gaps if the candidate is well-matched! If the candidate is a good fit, return an empty array [] for flagged_gaps.
-3. For each flagged gap, probe_direction MUST be phrased warm, respectful, curious, and non-accusatory — how an empathetic human recruiter would ask it to understand if the gap is explainable or transferable.
-
-Job Description:
-"""
-${truncate(jdText, 3000)}
-"""
-
-Candidate Resume:
-"""
-${truncate(resumeText, 3000)}
-"""
-
-Return ONLY JSON matching this schema:
-{
-  "domain_alignment": "aligned" | "partial" | "mismatched",
-  "domain_reasoning": "string",
-  "experience_gap": {
-    "jd_required_years": number | null,
-    "candidate_years": number | null,
-    "status": "underqualified" | "overqualified" | "aligned" | "unclear",
-    "reasoning": "string"
-  },
-  "flagged_gaps": [
-    {
-      "gap_type": "domain_mismatch" | "experience_mismatch" | "stack_mismatch" | "seniority_mismatch",
-      "description": "concise 1-sentence description of the gap",
-      "probe_direction": "warm, curious, non-accusatory recruiter probe direction"
-    }
-  ]
-}`
-
+  const webhookUrl = import.meta.env.VITE_WEBHOOK_INTERVIEW_ENGINE || '/webhook/interview-engine'
   try {
-    const raw = await generateCompletion(prompt)
-    const parsed = JSON.parse(extractJSON(raw))
+    const response = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'analyze-alignment', resumeText, jdText })
+    })
+    if (!response.ok) throw new Error(`n8n analyze-alignment failed: ${response.status}`)
+    const parsed = await response.json() as any
     return {
       domain_alignment: parsed.domain_alignment || 'aligned',
       domain_reasoning: parsed.domain_reasoning || '',
@@ -130,7 +99,7 @@ Return ONLY JSON matching this schema:
       flagged_gaps: Array.isArray(parsed.flagged_gaps) ? parsed.flagged_gaps : []
     }
   } catch (err) {
-    console.warn('[analyzeResumeJdAlignment] Failed, returning fallback:', err)
+    console.warn('[analyzeResumeJdAlignment] n8n call failed, returning fallback:', err)
     return fallback
   }
 }
@@ -271,64 +240,23 @@ function fallbackBlueprint(sessionId: string, analysis: CandidateAnalysis): Inte
 
 export async function generateInterviewBlueprint(sessionId: string, resumeText: string, jdText: string, analysis: CandidateAnalysis): Promise<InterviewBlueprint> {
   const fallback = fallbackBlueprint(sessionId, analysis)
-  const extractedTools = analysis.extractedTools || []
-  const alignment = analysis.alignment
-  const flaggedGaps = alignment?.flagged_gaps || []
 
-  const toolsContext = extractedTools.length > 0
-    ? `\nExtracted JD tools/technologies (6-10 specific named tools pulled from the JD):\n${JSON.stringify(extractedTools, null, 2)}`
-    : ''
-
-  const gapsContext = flaggedGaps.length > 0
-    ? `\nFlagged alignment gaps from resume vs JD analysis:\n${JSON.stringify(flaggedGaps, null, 2)}`
-    : '\nFlagged alignment gaps: None (candidate is well-aligned with the role).'
-
-  const prompt = `You are designing a realistic screening interview plan (10 primary questions total) that mirrors how a human HR & technical recruiter screens a candidate.
-
-TARGET COMPOSITION (EXACTLY 10 QUESTIONS):
-1. technical_jd (4-7 items): JD-required named tools (must_have importance first).
-2. technical_resume (0-1 item): candidate's resume-only tool to verify depth. Skip if no resume-only tool.
-3. gap_probe (0-2 items): probe real flagged alignment gaps. ONLY create gap_probe items if real gaps exist in the analysis below! Do NOT invent gaps. Convert any unused gap slots to technical_jd.
-4. problem_solving (1 item): scenario/case-based reasoning question (no target_tool).
-5. cultural (2 items): work style, teamwork, feedback, collaboration.
-
-RULES:
-- Map competencies to SPECIFIC named tools (e.g. "React", "PostgreSQL").
-- Difficulty must be "foundation" or "applied" only.
-${toolsContext}
-${gapsContext}
-
-Job description:
-"""
-${truncate(jdText, 3000)}
-"""
-Resume:
-"""
-${truncate(resumeText, 3000)}
-"""
-
-Return ONLY JSON matching:
-{
-  "competencies": [{"id":"short-kebab-id","name":"SPECIFIC TOOL NAME","weight":1,"description":"string","expected_evidence":["string"]}],
-  "question_plan": [
-    {
-      "id": "plan-1",
-      "category": "technical_jd|technical_resume|gap_probe|problem_solving|cultural",
-      "competency_ids": ["competency-id"],
-      "target_tool": "React",
-      "verification_mode": "verify_claim|baseline_check",
-      "objective": "string",
-      "question_type": "technical|behavioral|situational|cultural",
-      "difficulty": "foundation|applied",
-      "gap_ref": { "gap_type": "domain_mismatch", "description": "string", "probe_direction": "string" }
-    }
-  ],
-  "candidate_summary": {"strengths":["string"],"gaps":["string"],"claims_to_validate":["string"]},
-  "constraints": {"max_primary_questions":10,"max_follow_ups_per_question":1}
-}`
-
+  const webhookUrl = import.meta.env.VITE_WEBHOOK_INTERVIEW_ENGINE || '/webhook/interview-engine'
   try {
-    const parsed = JSON.parse(extractJSON(await generateCompletion(prompt)))
+    const response = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'generate-blueprint',
+        sessionId,
+        resumeText,
+        jdText,
+        extractedTools: analysis.extractedTools || [],
+        flaggedGaps: analysis.alignment?.flagged_gaps || []
+      })
+    })
+    if (!response.ok) throw new Error(`n8n generate-blueprint failed: ${response.status}`)
+    const parsed = await response.json() as any
     if (!Array.isArray(parsed.competencies) || !Array.isArray(parsed.question_plan)) return fallback
     return {
       ...fallback,
@@ -341,7 +269,7 @@ Return ONLY JSON matching:
       constraints: { ...fallback.constraints, max_primary_questions: 10, max_follow_ups_per_question: 1 }
     }
   } catch (error) {
-    console.warn('[generateInterviewBlueprint] Falling back to deterministic blueprint:', error)
+    console.warn('[generateInterviewBlueprint] n8n call failed, using deterministic fallback:', error)
     return fallback
   }
 }
@@ -543,98 +471,8 @@ export function getDynamicCandidateQuestion(
 }
 
 
-async function callGemini(prompt: string, apiKey: string): Promise<string> {
-  const model = import.meta.env.VITE_GEMINI_MODEL || 'gemini-1.5-flash'
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: {
-        responseMimeType: 'application/json',
-        temperature: 1.0,
-        topP: 0.95
-      }
-    })
-  })
-  if (!response.ok) {
-    const errorText = await response.text()
-    throw new Error(`Gemini API error: ${response.status} - ${errorText}`)
-  }
-  const data = await response.json()
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text
-  if (!text) throw new Error('Invalid response format from Gemini')
-  return text
-}
-
-async function callGroq(prompt: string, apiKey: string): Promise<string> {
-  const model = import.meta.env.VITE_GROQ_MODEL || 'llama-3.3-70b-versatile'
-  const url = 'https://api.groq.com/openai/v1/chat/completions'
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`
-    },
-    body: JSON.stringify({
-      model,
-      messages: [{ role: 'user', content: prompt }],
-      temperature: 1.0,
-      top_p: 0.95
-    })
-  })
-  if (!response.ok) {
-    const errorText = await response.text()
-    throw new Error(`Groq API error: ${response.status} - ${errorText}`)
-  }
-  const data = await response.json()
-  const text = data.choices?.[0]?.message?.content
-  if (!text) throw new Error('Invalid response from Groq')
-  return text
-}
-
-async function callOpenAI(prompt: string, apiKey: string): Promise<string> {
-  const model = import.meta.env.VITE_OPENAI_MODEL || 'gpt-4o-mini'
-  const url = 'https://api.openai.com/v1/chat/completions'
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`
-    },
-    body: JSON.stringify({
-      model,
-      messages: [{ role: 'user', content: prompt }],
-      temperature: 1.0,
-      top_p: 0.95
-    })
-  })
-  if (!response.ok) {
-    const errorText = await response.text()
-    throw new Error(`OpenAI API error: ${response.status} - ${errorText}`)
-  }
-  const data = await response.json()
-  const text = data.choices?.[0]?.message?.content
-  if (!text) throw new Error('Invalid response from OpenAI')
-  return text
-}
-
-export async function generateCompletion(prompt: string): Promise<string> {
-  const geminiKey = import.meta.env.VITE_GEMINI_API_KEY
-  const groqKey = import.meta.env.VITE_GROQ_API_KEY
-  const openaiKey = import.meta.env.VITE_OPENAI_API_KEY || import.meta.env.OPENAI_API_KEY
-
-  if (geminiKey) {
-    return callGemini(prompt, geminiKey)
-  } else if (groqKey) {
-    return callGroq(prompt, groqKey)
-  } else if (openaiKey && openaiKey !== 'sk-your-key-here') {
-    return callOpenAI(prompt, openaiKey)
-  } else {
-    throw new Error('No LLM API key configured')
-  }
-}
+// All LLM calls are routed through n8n webhooks.
+// Direct browser-to-LLM API calls have been removed — API keys live in n8n only.
 
 // -------------------------------------------------------------------
 // Real-time answer analysis — called after every candidate answer.
@@ -791,15 +629,14 @@ export async function auditResumeTruthfulness(
 ): Promise<ResumeTruthAudit> {
   if (!resumeText) return { claims: [], summary: '' }
 
-  const webhookUrl = import.meta.env.VITE_WEBHOOK_AUDIT_RESUME_TRUTHFULNESS || '/webhook/audit-resume-truthfulness'
+  const webhookUrl = import.meta.env.VITE_WEBHOOK_INTERVIEW_ENGINE || '/webhook/interview-engine'
   try {
     const response = await fetch(webhookUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ resumeText, jdText })
+      body: JSON.stringify({ action: 'audit-resume', resumeText, jdText })
     })
-
-    if (!response.ok) throw new Error(`n8n audit-resume-truthfulness failed: ${response.status}`)
+    if (!response.ok) throw new Error(`n8n audit-resume failed: ${response.status}`)
     const parsed = await response.json() as any
     const rawClaims = Array.isArray(parsed.claims) ? parsed.claims : []
     const claims = rawClaims.map((c: any) => ({
@@ -811,8 +648,8 @@ export async function auditResumeTruthfulness(
     }))
     return { claims, summary: parsed.summary || '' }
   } catch (err) {
-    console.warn('[auditResumeTruthfulness] n8n call failed, returning fallback empty:', err)
-    return { claims: [], summary: `Resume truth audit unavailable.` }
+    console.warn('[auditResumeTruthfulness] n8n call failed, returning empty audit:', err)
+    return { claims: [], summary: 'Resume truth audit unavailable.' }
   }
 }
 
@@ -824,15 +661,14 @@ export async function auditResumeTruthfulness(
 // and pass it into generateNextInterviewQuestion for every question in that interview
 // — don't call this more than once per interview.
 export async function analyzeCandidateFit(resumeText: string, jdText: string): Promise<CandidateAnalysis> {
-  const webhookUrl = import.meta.env.VITE_WEBHOOK_ANALYZE_CANDIDATE_FIT || '/webhook/analyze-candidate-fit'
+  const webhookUrl = import.meta.env.VITE_WEBHOOK_INTERVIEW_ENGINE || '/webhook/interview-engine'
   try {
     const response = await fetch(webhookUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ resumeText, jdText })
+      body: JSON.stringify({ action: 'analyze-fit', resumeText, jdText })
     })
-
-    if (!response.ok) throw new Error(`n8n analyze-candidate-fit failed: ${response.status}`)
+    if (!response.ok) throw new Error(`n8n analyze-fit failed: ${response.status}`)
     const parsed = await response.json() as any
     const rawSkills = Array.isArray(parsed.skills) ? parsed.skills : []
     const skills = rawSkills.map((s: any) => ({
@@ -848,12 +684,8 @@ export async function analyzeCandidateFit(resumeText: string, jdText: string): P
       summary: parsed.summary || ''
     }
   } catch (err) {
-    console.warn('[analyzeCandidateFit] n8n call failed, returning fallback empty:', err)
-    return {
-      skills: [],
-      projectMappings: [],
-      summary: `Skill analysis unavailable.`
-    }
+    console.warn('[analyzeCandidateFit] n8n call failed, returning empty analysis:', err)
+    return { skills: [], projectMappings: [], summary: 'Skill analysis unavailable.' }
   }
 }
 
@@ -862,46 +694,15 @@ export async function analyzeCandidateFit(resumeText: string, jdText: string): P
 // appears in the candidate's resume with its exact usage context.
 // Result is merged into CandidateAnalysis.extractedTools by the caller.
 export async function extractJdToolsAndTech(resumeText: string, jdText: string): Promise<JdTool[]> {
-  const prompt = `You are a technical recruiting assistant. Analyze the Job Description (JD) and Candidate Resume to extract 6-10 specific, named tools, technologies, languages, frameworks, or protocols that the JD requires.
-
-IMPORTANT — extract CONCRETE tools only. Do NOT extract abstract categories:
-✅ GOOD: "React", "PostgreSQL", "Docker", "REST APIs", "TypeScript", "Python", "Redis", "Kubernetes"
-❌ BAD: "frontend development", "agile", "communication", "databases", "cloud", "APIs" (too vague)
-
-For each extracted tool, provide:
-1. name: The exact tool/technology name (e.g. "React", "PostgreSQL")
-2. category: Tech category (e.g. "Frontend", "Backend", "Database", "DevOps", "API", "Language")
-3. importance: "must_have" if the JD marks it as required/essential, or "nice_to_have" if preferred/plus
-4. mentioned_in_resume: true if the tool appears anywhere in the candidate's resume, false otherwise
-5. resume_context: If mentioned_in_resume is true, the exact sentence or phrase from the resume where it appears. If false, set to null.
-
-Job Description:
-"""
-${truncate(jdText || 'Not provided', 3000)}
-"""
-
-Candidate Resume:
-"""
-${truncate(resumeText || 'Not provided', 3000)}
-"""
-
-Return ONLY valid JSON in this exact format:
-{
-  "tools": [
-    {
-      "name": "React",
-      "category": "Frontend",
-      "importance": "must_have",
-      "mentioned_in_resume": true,
-      "resume_context": "Built reusable UI components using React and TypeScript at Acme Corp"
-    }
-  ]
-}`
-
+  const webhookUrl = import.meta.env.VITE_WEBHOOK_INTERVIEW_ENGINE || '/webhook/interview-engine'
   try {
-    const raw = await generateCompletion(prompt)
-    const cleaned = extractJSON(raw)
-    const parsed = JSON.parse(cleaned)
+    const response = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'extract-tools', resumeText, jdText })
+    })
+    if (!response.ok) throw new Error(`n8n extract-tools failed: ${response.status}`)
+    const parsed = await response.json() as any
     if (!Array.isArray(parsed.tools)) return []
     return parsed.tools.map((t: Record<string, unknown>) => ({
       name: String(t.name || ''),
@@ -911,7 +712,7 @@ Return ONLY valid JSON in this exact format:
       resume_context: t.resume_context ? String(t.resume_context) : null
     }))
   } catch (err) {
-    console.warn('[extractJdToolsAndTech] Failed to extract JD tools, returning empty list:', err)
+    console.warn('[extractJdToolsAndTech] n8n call failed, returning empty list:', err)
     return []
   }
 }
