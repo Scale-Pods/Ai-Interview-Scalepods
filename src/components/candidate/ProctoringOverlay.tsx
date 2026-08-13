@@ -30,9 +30,18 @@ export function ProctoringOverlay({ violations, sessionId }: ProctoringOverlayPr
 
     setTotalViolationCount(violations.length)
 
-    const criticalCount = violations.filter(v => v.severity === 'critical').length
+    // Only count violations that represent deliberate, intentional actions toward termination.
+    // Sensor-based events (face_absent, face_multiple, audio_silence) are excluded because
+    // they have high false-positive rates in remote candidate environments (dark rooms,
+    // Bluetooth headsets, patterned backgrounds, etc.).
+    const INTENTIONAL_TYPES: string[] = ['fullscreen_exit', 'keyboard_shortcut', 'copy_paste', 'tab_switch']
+    const intentionalCritical = violations.filter(
+      v => v.severity === 'critical' && INTENTIONAL_TYPES.includes(v.event_type)
+    ).length
 
-    if (last.severity === 'critical' && criticalCount >= 3) {
+    // Terminate only after 5+ intentional critical violations — prevents false terminations
+    // from sensor noise events that were previously critical (now downgraded to warning).
+    if (intentionalCritical >= 5) {
       setIsDisabled(true)
       setWarningMessage('Interview terminated due to multiple critical security violations.')
       return
@@ -68,6 +77,12 @@ export function ProctoringOverlay({ violations, sessionId }: ProctoringOverlayPr
         break
       case 'face_mismatch':
         message = 'Camera feed mismatch detected. Please remain clearly visible.'
+        break
+      case 'gaze_away':
+        message = 'You appear to be looking away from the screen. Please keep your eyes on the interview window.'
+        break
+      case 'head_down':
+        message = 'Please look at the camera. Looking down for extended periods is not permitted during the interview.'
         break
       case 'audio_silence':
         message = 'No audio input detected for an extended period. Please speak your answer.'

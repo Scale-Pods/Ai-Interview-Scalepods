@@ -33,11 +33,14 @@ export async function fetchProctoringSummary(sessionId: string): Promise<Proctor
     fullscreenExits: events.filter(e => e.event_type === 'fullscreen_exit').length,
     copyPastes: events.filter(e => e.event_type === 'copy_paste').length,
     keyboardShortcuts: events.filter(e => e.event_type === 'keyboard_shortcut').length,
+    gazeAway: events.filter(e => e.event_type === 'gaze_away').length,
+    headDown: events.filter(e => e.event_type === 'head_down').length,
   }
   return summary
 }
 
 export async function fetchPublicProctoringSummary(sessionId: string): Promise<ProctoringSummary> {
+
   const { data, error } = await supabasePublic
     .from('proctoring_events_ai_interview')
     .select('event_type, severity')
@@ -58,6 +61,8 @@ export async function fetchPublicProctoringSummary(sessionId: string): Promise<P
     fullscreenExits: events.filter(e => e.event_type === 'fullscreen_exit').length,
     copyPastes: events.filter(e => e.event_type === 'copy_paste').length,
     keyboardShortcuts: events.filter(e => e.event_type === 'keyboard_shortcut').length,
+    gazeAway: events.filter(e => e.event_type === 'gaze_away').length,
+    headDown: events.filter(e => e.event_type === 'head_down').length,
   }
   return summary
 }

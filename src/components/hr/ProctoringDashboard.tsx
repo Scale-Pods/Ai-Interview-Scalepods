@@ -16,6 +16,7 @@ const severityColor = (s: string) => {
 
 const eventIcon = (type: string) => {
   if (type.startsWith('tab') || type.startsWith('window')) return Eye
+  if (type === 'gaze_away' || type === 'head_down') return Eye
   if (type.startsWith('face') || type.startsWith('fullscreen')) return Monitor
   if (type.startsWith('audio')) return Mic
   return AlertTriangle
@@ -94,6 +95,8 @@ export function ProctoringDashboard() {
         fullscreenExits: events.filter(e => e.event_type === 'fullscreen_exit').length,
         copyPastes: events.filter(e => e.event_type === 'copy_paste').length,
         keyboardShortcuts: events.filter(e => e.event_type === 'keyboard_shortcut').length,
+        gazeAway: events.filter(e => e.event_type === 'gaze_away').length,
+        headDown: events.filter(e => e.event_type === 'head_down').length,
       }
       setSummaryMap(prev => ({ ...prev, [sessionId]: summary }))
     }
@@ -194,6 +197,14 @@ export function ProctoringDashboard() {
                       <div className="rounded-lg px-2.5 py-2 text-center" style={{ background: 'color-mix(in srgb, var(--teal) 10%, transparent)' }}>
                         <p className="text-lg font-bold" style={{ color: 'var(--teal)', fontVariantNumeric: 'tabular-nums' }}>{summary.keyboardShortcuts}</p>
                         <p className="text-[10px]" style={{ color: 'var(--label-secondary)' }}>Shortcuts</p>
+                      </div>
+                      <div className="rounded-lg px-2.5 py-2 text-center" style={{ background: 'color-mix(in srgb, var(--orange) 10%, transparent)' }}>
+                        <p className="text-lg font-bold" style={{ color: 'var(--orange)', fontVariantNumeric: 'tabular-nums' }}>{summary.gazeAway}</p>
+                        <p className="text-[10px]" style={{ color: 'var(--label-secondary)' }}>Gaze Away</p>
+                      </div>
+                      <div className="rounded-lg px-2.5 py-2 text-center" style={{ background: 'color-mix(in srgb, var(--red) 10%, transparent)' }}>
+                        <p className="text-lg font-bold" style={{ color: 'var(--red)', fontVariantNumeric: 'tabular-nums' }}>{summary.headDown}</p>
+                        <p className="text-[10px]" style={{ color: 'var(--label-secondary)' }}>Head Down</p>
                       </div>
                     </div>
 

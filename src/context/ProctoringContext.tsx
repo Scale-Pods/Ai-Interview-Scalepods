@@ -8,7 +8,7 @@ interface ProctoringContextType {
   isSecure: boolean
   recentEvent: ProctoringEvent | null
   sessionViolations: Map<string, ProctoringEvent[]>
-  startProctoring: (sessionId: string, audioStream?: MediaStream) => Promise<void>
+  startProctoring: (sessionId: string, audioStream?: MediaStream, isAiSpeakingRef?: React.MutableRefObject<boolean>) => Promise<void>
   stopProctoring: () => void
   emitEvent: (type: ProctoringEventType, severity: ProctoringSeverity, payload?: Record<string, unknown>) => Promise<void>
   subscribeToSession: (sessionId: string) => () => void
@@ -21,11 +21,11 @@ export function ProctoringProvider({ children }: { children: React.ReactNode }) 
   const [sessionId, setSessionId] = useState<string | null>(null)
   const localProctoring = useProctoring(sessionId || '')
 
-  const startProctoring = useCallback(async (sid: string, audioStream?: MediaStream) => {
+  const startProctoring = useCallback(async (sid: string, audioStream?: MediaStream, isAiSpeakingRef?: React.MutableRefObject<boolean>) => {
     // Set sessionId FIRST synchronously via the ref path inside useProctoring,
     // then update React state. This prevents the race condition where events
     // fire before the state update settles, resulting in empty session_ids.
-    await localProctoring.start(sid, audioStream)
+    await localProctoring.start(sid, audioStream, isAiSpeakingRef)
     setSessionId(sid)
   }, [localProctoring])
 

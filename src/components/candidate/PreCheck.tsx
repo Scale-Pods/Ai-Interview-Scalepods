@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { CheckCircle, XCircle, Loader, RefreshCw, Shield, Monitor, AlertTriangle } from 'lucide-react'
 import type { InterviewSession } from '@/types'
+import { OPTIMAL_AUDIO_CONSTRAINTS } from '@/utils/mediaHelpers'
 
 interface DeviceCheck {
   camera: boolean | null
@@ -48,7 +49,10 @@ export function PreCheck({ onComplete, session }: PreCheckProps) {
   const checkMicrophone = useCallback(async (timeoutMs: number): Promise<boolean> => {
     const tmr = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), timeoutMs))
     try {
-      const stream = await Promise.race([navigator.mediaDevices.getUserMedia({ audio: true }), tmr]) as MediaStream
+      const stream = await Promise.race([
+        navigator.mediaDevices.getUserMedia({ audio: OPTIMAL_AUDIO_CONSTRAINTS }),
+        tmr
+      ]) as MediaStream
       stream.getTracks().forEach(t => t.stop())
       return true
     } catch (e) {

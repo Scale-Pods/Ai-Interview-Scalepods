@@ -243,22 +243,49 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
       if (audioCtx.state === 'suspended') {
         await audioCtx.resume().catch(() => {})
       }
+
       const source = audioCtx.createMediaStreamSource(stream)
+      
+      // Highpass Filter at 85Hz: Cuts out ambient low-frequency rumble, AC/fan hum, traffic, and desk bumps
+      const highpassFilter = audioCtx.createBiquadFilter()
+      highpassFilter.type = 'highpass'
+      highpassFilter.frequency.setValueAtTime(85, audioCtx.currentTime)
+      highpassFilter.Q.setValueAtTime(0.7, audioCtx.currentTime)
+
       const analyser = audioCtx.createAnalyser()
       analyser.fftSize = 256
-      source.connect(analyser)
+      
+      source.connect(highpassFilter)
+      highpassFilter.connect(analyser)
       analyserRef.current = analyser
 
-      const audioData = new Uint8Array(analyser.fftSize)
+      const freqData = new Uint8Array(analyser.frequencyBinCount)
       let wasSpeaking = false
+      let ambientNoiseFloor = 8.0 // Adaptive baseline tracker
       clearAudioActivityMonitor()
       
       setTimeout(() => {
         if (gen !== generationRef.current || !isRecordingRef.current) return
         audioActivityIntervalRef.current = setInterval(() => {
-          analyser.getByteTimeDomainData(audioData)
-          const averageAmplitude = audioData.reduce((total, sample) => total + Math.abs(sample - 128), 0) / audioData.length
-          const isSpeaking = averageAmplitude >= VOICE_ACTIVITY_THRESHOLD
+          analyser.getByteFrequencyData(freqData)
+
+          // Human speech frequency band: Bins 2 to 18 (~375Hz to ~3375Hz)
+          let vocalBandSum = 0
+          const vocalBinsCount = 17
+          for (let i = 2; i <= 18; i++) {
+            vocalBandSum += freqData[i]
+          }
+          const vocalEnergy = vocalBandSum / vocalBinsCount
+
+          // Adaptive noise floor tracking: slowly adapt to ambient fan/room noise
+          if (vocalEnergy < ambientNoiseFloor) {
+            ambientNoiseFloor = ambientNoiseFloor * 0.9 + vocalEnergy * 0.1
+          } else {
+            ambientNoiseFloor = ambientNoiseFloor * 0.995 + vocalEnergy * 0.005
+          }
+
+          // Voice activity detected when speech energy rises distinctly above ambient noise floor
+          const isSpeaking = vocalEnergy > (ambientNoiseFloor * 1.5 + 4.0)
           isVoiceActiveRef.current = isSpeaking
 
           if (isSpeaking) {
@@ -411,6 +438,17 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
               <div className="flex items-center gap-2">
                 <span className="w-2 h-2 rounded-full animate-ping" style={{ background: 'var(--green)' }} />
                 <span className="text-xs font-semibold" style={{ color: 'var(--green)' }}>Listening</span>
+                <span className="px-2 py-0.5 text-[10px] font-medium rounded-md flex items-center gap-1"
+                  style={{
+                    background: 'rgba(16, 185, 129, 0.1)',
+                    border: '1px solid rgba(16, 185, 129, 0.25)',
+                    color: 'var(--green)'
+                  }}
+                  title="Hardware & WebAudio noise suppression, echo cancellation, & highpass filter active"
+                >
+                  <span className="w-1 h-1 rounded-full bg-emerald-400" />
+                  Noise Filtered
+                </span>
                 {sttProvider === 'deepgram' && (
                   <span className="px-2 py-0.5 text-[10px] font-semibold rounded-md flex items-center gap-1.5"
                     style={{

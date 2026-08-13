@@ -62,6 +62,9 @@ export class DeepgramSTT {
       punctuate: 'true',
       smart_formatting: 'true',
       interim_results: 'true',
+      vad_events: 'true',
+      endpointing: '300',
+      no_delay: 'true'
     })
 
     const url = `wss://api.deepgram.com/v1/listen?${params.toString()}`

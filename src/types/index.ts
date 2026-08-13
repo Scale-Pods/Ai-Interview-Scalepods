@@ -106,7 +106,8 @@ export type ProctoringEventType =
   | 'tab_switch' | 'window_blur' | 'browser_resize'
   | 'face_absent' | 'face_multiple' | 'face_mismatch'
   | 'audio_silence' | 'audio_level' | 'copy_paste'
-  | 'keyboard_shortcut' | 'fullscreen_exit';
+  | 'keyboard_shortcut' | 'fullscreen_exit'
+  | 'gaze_away' | 'head_down';
 
 export type ProctoringSeverity = 'info' | 'warning' | 'critical';
 
@@ -313,6 +314,8 @@ export interface ProctoringSummary {
   fullscreenExits: number;
   copyPastes: number;
   keyboardShortcuts: number;
+  gazeAway: number;
+  headDown: number;
 }
 
 export interface TimelineEvent {

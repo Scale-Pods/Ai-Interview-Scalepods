@@ -53,8 +53,48 @@ export async function getCameraStream(constraints?: MediaTrackConstraints, timeo
   return stream
 }
 
+export const OPTIMAL_AUDIO_CONSTRAINTS: MediaTrackConstraints = {
+  echoCancellation: true,
+  noiseSuppression: true,
+  autoGainControl: true,
+  channelCount: 1, // Mono channel prevents stereo phase cancellation with background noise
+  sampleRate: 48000,
+  sampleSize: 16,
+  // Chromium / WebKit vendor extension flags for enhanced DSP noise cancellation
+  googEchoCancellation: true,
+  googAutoGainControl: true,
+  googNoiseSuppression: true,
+  googHighpassFilter: true,
+  googNoiseSuppression2: true,
+  googEchoCancellation2: true,
+} as any
+
 export async function getAudioStream(timeoutMs = 4000): Promise<MediaStream | null> {
   const audioOnlyTimeout = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), timeoutMs))
+  
+  // Try optimal noise-suppressed constraints first
+  try {
+    return await Promise.race([
+      navigator.mediaDevices.getUserMedia({ audio: OPTIMAL_AUDIO_CONSTRAINTS }),
+      audioOnlyTimeout
+    ]) as MediaStream
+  } catch {}
+
+  // Fall back to standard audio constraints if vendor extensions are rejected
+  try {
+    return await Promise.race([
+      navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      }),
+      audioOnlyTimeout
+    ]) as MediaStream
+  } catch {}
+
+  // Fall back to simple audio boolean
   try {
     return await Promise.race([
       navigator.mediaDevices.getUserMedia({ audio: true }),
@@ -62,8 +102,9 @@ export async function getAudioStream(timeoutMs = 4000): Promise<MediaStream | nu
     ]) as MediaStream
   } catch {}
 
-  // Try video+audio combined first — camera's built-in mic may require video
+  // Try video+audio combined first — camera's built-in mic may require video stream
   for (const cons of [
+    { audio: OPTIMAL_AUDIO_CONSTRAINTS, video: true },
     { audio: true, video: true },
     { audio: true }
   ]) {

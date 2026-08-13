@@ -133,7 +133,7 @@ export function InterviewRoom() {
       }
       if (session) {
         console.log('handleStart: starting proctoring...')
-        startProctoring(session.id, audio ?? undefined)
+        startProctoring(session.id, audio ?? undefined, isAiSpeakingRef)
       }
       console.log('handleStart: done')
     } catch (err) {
