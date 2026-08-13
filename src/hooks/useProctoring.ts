@@ -42,9 +42,25 @@ export function useProctoring(sessionId: string) {
   const silenceIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const silentFramesRef = useRef(0)
 
+  // False-positive prevention: Strike counters and cooldown timers
+  const faceAbsentStrikesRef = useRef(0)
+  const faceMultipleStrikesRef = useRef(0)
+  const lastEmitTimesRef = useRef<Map<ProctoringEventType, number>>(new Map())
+  const lastTabSwitchTimeRef = useRef(0)
+
   useEffect(() => {
     activeSessionIdRef.current = sessionId
   }, [sessionId])
+
+  const canEmit = useCallback((eventType: ProctoringEventType, cooldownMs: number): boolean => {
+    const lastTime = lastEmitTimesRef.current.get(eventType) || 0
+    const now = Date.now()
+    if (now - lastTime < cooldownMs) {
+      return false
+    }
+    lastEmitTimesRef.current.set(eventType, now)
+    return true
+  }, [])
 
   const emitEvent = useCallback(async (
     eventType: ProctoringEventType,
@@ -133,16 +149,29 @@ export function useProctoring(sessionId: string) {
 
     // 1. Tab / Visibility Observers
     const handleVisibility = () => {
-      if (document.hidden) emitEvent('tab_switch', 'warning')
+      if (document.hidden) {
+        lastTabSwitchTimeRef.current = Date.now()
+        if (canEmit('tab_switch', 10000)) {
+          emitEvent('tab_switch', 'warning')
+        }
+      }
     }
 
-    // Debounce window_blur — 50ms ensures Alt-Tab or clicking outside window fires immediately
+    // Debounce window_blur — 1200ms grace window ensures native selects, popups, or inputs don't trigger false blurs
     let blurTimer: ReturnType<typeof setTimeout> | null = null
     const handleBlur = () => {
       if (blurTimer) clearTimeout(blurTimer)
+      // Ignore blur if tab switch is active
+      if (document.hidden) return
       blurTimer = setTimeout(() => {
-        if (!document.hasFocus()) emitEvent('window_blur', 'warning')
-      }, 50)
+        const now = Date.now()
+        // Ignore blur if tab_switch was triggered recently (<2s) or window still has focus/hidden
+        if (!document.hasFocus() && !document.hidden && (now - lastTabSwitchTimeRef.current > 2000)) {
+          if (canEmit('window_blur', 10000)) {
+            emitEvent('window_blur', 'warning')
+          }
+        }
+      }, 1200)
     }
     const handleFocus = () => {
       if (blurTimer) clearTimeout(blurTimer)
@@ -151,36 +180,51 @@ export function useProctoring(sessionId: string) {
     let lastWidth = window.innerWidth
     const handleResize = () => {
       const change = Math.abs(window.innerWidth - lastWidth)
-      if (change > 100) emitEvent('browser_resize', 'info', { from: lastWidth, to: window.innerWidth })
+      if (change > 120 && canEmit('browser_resize', 15000)) {
+        emitEvent('browser_resize', 'info', { from: lastWidth, to: window.innerWidth })
+      }
       lastWidth = window.innerWidth
     }
 
     // 2. Fullscreen Enforcer 
     const handleFullscreenChange = () => {
       if (!document.fullscreenElement && isActive && !isStoppingRef.current) {
-        emitEvent('fullscreen_exit', 'critical')
+        if (canEmit('fullscreen_exit', 15000)) {
+          emitEvent('fullscreen_exit', 'critical')
+        }
         document.documentElement.requestFullscreen().catch(() => {})
       }
     }
 
-    // 3. Key Blocks
-    const blockedKeys = ['F12', 'Escape', 'Control+R', 'Control+Shift+I', 'Control+Shift+J']
+    // 3. Key Blocks — keep true security shortcuts, exclude benign keys like Escape
+    const blockedKeys = ['F12', 'Control+R', 'Control+Shift+I', 'Control+Shift+J', 'Control+Shift+C']
     const handleKeyDown = (e: KeyboardEvent) => {
       const key = [e.ctrlKey ? 'Control' : '', e.shiftKey ? 'Shift' : '', e.altKey ? 'Alt' : '', e.metaKey ? 'Meta' : '', e.key].filter(Boolean).join('+')
       if (blockedKeys.includes(key)) {
         e.preventDefault()
         e.stopPropagation()
-        emitEvent('keyboard_shortcut', 'warning', { key })
+        if (canEmit('keyboard_shortcut', 5000)) {
+          emitEvent('keyboard_shortcut', 'warning', { key })
+        }
       }
     }
 
     // 4. Clipboard Blocks
-    const handleCopy = (e: Event) => { e.preventDefault(); emitEvent('copy_paste', 'warning', { action: 'copy' }) }
-    const handlePaste = (e: Event) => { e.preventDefault(); emitEvent('copy_paste', 'warning', { action: 'paste' }) }
-    const handleCut = (e: Event) => { e.preventDefault(); emitEvent('copy_paste', 'warning', { action: 'cut' }) }
+    const handleCopy = (e: Event) => {
+      e.preventDefault()
+      if (canEmit('copy_paste', 5000)) emitEvent('copy_paste', 'warning', { action: 'copy' })
+    }
+    const handlePaste = (e: Event) => {
+      e.preventDefault()
+      if (canEmit('copy_paste', 5000)) emitEvent('copy_paste', 'warning', { action: 'paste' })
+    }
+    const handleCut = (e: Event) => {
+      e.preventDefault()
+      if (canEmit('copy_paste', 5000)) emitEvent('copy_paste', 'warning', { action: 'cut' })
+    }
     const handleContextMenu = (e: Event) => e.preventDefault()
 
-    // 5. Universal Face & Multi-Face Detection Loop
+    // 5. Universal Face & Multi-Face Detection Loop (Debounced to 3 consecutive strikes ~9s)
     const findVideo = () => (document.getElementById('camera-feed') || document.querySelector('video')) as HTMLVideoElement | null
 
     faceIntervalRef.current = setInterval(async () => {
@@ -193,9 +237,21 @@ export function useProctoring(sessionId: string) {
           const detector = new (window as any).FaceDetector()
           const faces = await detector.detect(video)
           if (faces.length === 0) {
-            emitEvent('face_absent', 'warning', { reason: 'no_face_detected' })
+            faceAbsentStrikesRef.current++
+            faceMultipleStrikesRef.current = 0
+            if (faceAbsentStrikesRef.current >= 3 && canEmit('face_absent', 20000)) {
+              emitEvent('face_absent', 'warning', { reason: 'no_face_detected' })
+            }
           } else if (faces.length > 1) {
-            emitEvent('face_multiple', 'critical', { count: faces.length })
+            faceMultipleStrikesRef.current++
+            faceAbsentStrikesRef.current = 0
+            if (faceMultipleStrikesRef.current >= 3 && canEmit('face_multiple', 20000)) {
+              emitEvent('face_multiple', 'critical', { count: faces.length })
+            }
+          } else {
+            // Clean single face detected
+            faceAbsentStrikesRef.current = 0
+            faceMultipleStrikesRef.current = 0
           }
           return
         } catch {}
@@ -227,10 +283,10 @@ export function useProctoring(sessionId: string) {
 
             // Universal skin-tone color model in RGB space
             const isSkin = (
-              r > 40 && g > 25 && b > 15 &&
+              r > 45 && g > 28 && b > 18 &&
               r > g && r > b &&
-              Math.max(r, g, b) - Math.min(r, g, b) > 12 &&
-              Math.abs(r - g) > 10
+              Math.max(r, g, b) - Math.min(r, g, b) > 15 &&
+              Math.abs(r - g) > 12
             )
 
             if (isSkin) {
@@ -243,42 +299,57 @@ export function useProctoring(sessionId: string) {
         const totalPixels = width * height
         const skinPercentage = (totalSkinPixels / totalPixels) * 100
 
-        // 1. Face Absence: Less than 3.5% of frame area contains skin-tone pixels
-        if (skinPercentage < 3.5) {
-          emitEvent('face_absent', 'warning', { skinPercentage: skinPercentage.toFixed(1) })
+        // 1. Face Absence: Less than 2.2% of frame area skin pixels (3 strikes required)
+        if (skinPercentage < 2.2) {
+          faceAbsentStrikesRef.current++
+          faceMultipleStrikesRef.current = 0
+          if (faceAbsentStrikesRef.current >= 3 && canEmit('face_absent', 20000)) {
+            emitEvent('face_absent', 'warning', { skinPercentage: skinPercentage.toFixed(1) })
+          }
           return
         }
 
-        // 2. Multiple Face Detection: Analyze horizontal skin density peaks
+        // 2. Multiple Face Detection: Analyze horizontal skin density peaks with width & separation filtering
         const smoothed = new Array(width).fill(0)
         for (let x = 2; x < width - 2; x++) {
           smoothed[x] = (columnCounts[x - 2] + columnCounts[x - 1] + columnCounts[x] + columnCounts[x + 1] + columnCounts[x + 2]) / 5
         }
 
-        let peakCount = 0
+        const peaks: number[] = []
         let inPeak = false
-        const peakThreshold = height * 0.12
+        const peakThreshold = height * 0.16
 
         for (let x = 5; x < width - 5; x++) {
           if (smoothed[x] > peakThreshold) {
             if (!inPeak) {
-              peakCount++
+              peaks.push(x)
               inPeak = true
             }
-          } else if (smoothed[x] < peakThreshold * 0.5) {
+          } else if (smoothed[x] < peakThreshold * 0.4) {
             inPeak = false
           }
         }
 
-        if (peakCount >= 2) {
-          emitEvent('face_multiple', 'critical', { detectedFaces: peakCount })
+        // Require distinct peaks separated by at least 35 columns to avoid neck/clothing split peaks
+        const distinctPeaks = peaks.filter((p, idx) => idx === 0 || p - peaks[idx - 1] > 35)
+
+        if (distinctPeaks.length >= 2) {
+          faceMultipleStrikesRef.current++
+          faceAbsentStrikesRef.current = 0
+          if (faceMultipleStrikesRef.current >= 3 && canEmit('face_multiple', 20000)) {
+            emitEvent('face_multiple', 'critical', { detectedFaces: distinctPeaks.length })
+          }
+        } else {
+          // Normal frame — reset strike counters
+          faceAbsentStrikesRef.current = 0
+          faceMultipleStrikesRef.current = 0
         }
       } catch (err) {
         console.warn('[Proctoring] Face detection frame error:', err)
       }
     }, 3000)
 
-    // 6. Audio Monitor Loop — use shared stream if provided, otherwise acquire
+    // 6. Audio Monitor Loop — 45s threshold to allow reading & thinking pauses
     async function initAudio() {
       const stream = audioStreamRef.current || await getAudioStream()
       if (!stream) {
@@ -304,12 +375,13 @@ export function useProctoring(sessionId: string) {
         silenceIntervalRef.current = setInterval(() => {
           analyser.getByteFrequencyData(dataArray)
           const average = dataArray.reduce((a, b) => a + b, 0) / bufferLength
-          if (average < 5) {
+          if (average < 4) {
             silentFramesRef.current++
-            // Raise threshold: 15 consecutive silent seconds before flagging
-            // This avoids false positives during normal thinking pauses
-            if (silentFramesRef.current >= 15) {
-              emitEvent('audio_silence', 'warning', { silentDurationSecs: silentFramesRef.current })
+            // 45 consecutive silent seconds before flagging to allow quiet reading/thinking
+            if (silentFramesRef.current >= 45) {
+              if (canEmit('audio_silence', 30000)) {
+                emitEvent('audio_silence', 'warning', { silentDurationSecs: silentFramesRef.current })
+              }
               silentFramesRef.current = 0
             }
           } else {
@@ -353,9 +425,8 @@ export function useProctoring(sessionId: string) {
       if (!audioExternallyManaged.current) {
         audioStreamRef.current?.getTracks().forEach(track => track.stop())
       }
-      closeAudioContext(audioContextRef)
     }
-  }, [isActive, emitEvent])
+  }, [isActive, emitEvent, canEmit])
 
   // Global unmount catchall fallback
   useEffect(() => {
