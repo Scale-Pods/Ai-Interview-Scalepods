@@ -7,7 +7,7 @@ interface ChatInputBarProps {
   isGeneratingTurn: boolean
   isAnalyzingAnswer: boolean
   onManualSubmit: () => void
-  canvasRef: React.RefObject<HTMLCanvasElement>
+  canvasRef: React.RefObject<HTMLCanvasElement | null>
 }
 
 const SILENCE_TIMEOUT_SEC = 4
