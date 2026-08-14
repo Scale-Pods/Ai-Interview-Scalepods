@@ -23,22 +23,67 @@ import {
   Sun, Moon
 } from 'lucide-react'
 import { ThemeProvider, useTheme } from '@/context/ThemeContext'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import type { InterviewSession } from '@/types'
 
 const queryClient = new QueryClient()
+
+type ViewType = 'dashboard' | 'candidates' | 'new' | 'proctoring' | 'session'
 
 function HRAppShell() {
   const { user, role, logout } = useAuthContext()
   const { theme, toggleTheme } = useTheme()
   const [sidebarOpen, setSidebarOpen] = useState(true)
-  const [selectedSession, setSelectedSession] = useState<InterviewSession | null>(null)
-  const [view, setView] = useState<'dashboard' | 'candidates' | 'new' | 'proctoring' | 'session'>('dashboard')
+
+  const [view, setView] = useState<ViewType>(() => {
+    try {
+      const savedView = sessionStorage.getItem('hr_app_view') as ViewType | null
+      if (savedView && ['dashboard', 'candidates', 'new', 'proctoring', 'session'].includes(savedView)) {
+        return savedView
+      }
+    } catch {}
+    return 'dashboard'
+  })
+
+  const [selectedSession, setSelectedSession] = useState<InterviewSession | null>(() => {
+    try {
+      const savedSession = sessionStorage.getItem('hr_app_selected_session')
+      if (savedSession) {
+        return JSON.parse(savedSession)
+      }
+    } catch {}
+    return null
+  })
+
+  const updateView = useCallback((newView: ViewType) => {
+    setView(newView)
+    try {
+      sessionStorage.setItem('hr_app_view', newView)
+    } catch {}
+  }, [])
+
+  const updateSelectedSession = useCallback((session: InterviewSession | null) => {
+    setSelectedSession(session)
+    try {
+      if (session) {
+        sessionStorage.setItem('hr_app_selected_session', JSON.stringify(session))
+        sessionStorage.setItem('hr_app_view', 'session')
+        setView('session')
+      } else {
+        sessionStorage.removeItem('hr_app_selected_session')
+      }
+    } catch {}
+  }, [])
 
   useEffect(() => {
     const onNavigateView = (e: Event) => {
       const detail = (e as CustomEvent).detail
-      if (detail?.view) setView(detail.view as typeof view)
+      if (detail?.view) {
+        updateView(detail.view as ViewType)
+        if (detail.view !== 'session') {
+          updateSelectedSession(null)
+        }
+      }
     }
     const onNavigateSession = (e: Event) => {
       const detail = (e as CustomEvent).detail
@@ -53,7 +98,15 @@ function HRAppShell() {
       window.removeEventListener('navigate-view', onNavigateView)
       window.removeEventListener('navigate-session', onNavigateSession)
     }
-  }, [])
+  }, [updateView, updateSelectedSession])
+
+  const handleLogout = () => {
+    try {
+      sessionStorage.removeItem('hr_app_view')
+      sessionStorage.removeItem('hr_app_selected_session')
+    } catch {}
+    logout()
+  }
 
   const navItems = [
     { id: 'dashboard' as const, label: 'Dashboard', icon: LayoutDashboard },
@@ -78,11 +131,11 @@ function HRAppShell() {
         <nav className="flex-1 p-3 space-y-1 overflow-y-auto">
           {navItems.map(item => {
             const Icon = item.icon
-            const isActive = view === item.id
+            const isActive = view === item.id || (item.id === 'candidates' && view === 'session')
             return (
               <button
                 key={item.id}
-                onClick={() => { setView(item.id); setSelectedSession(null) }}
+                onClick={() => { updateView(item.id); updateSelectedSession(null) }}
                 className={`nav-item w-full ${isActive ? 'active' : ''}`}
               >
                 {isActive && (
@@ -123,7 +176,7 @@ function HRAppShell() {
             </div>
           </div>
           <button
-            onClick={logout}
+            onClick={handleLogout}
             className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs transition-all duration-200 ${!sidebarOpen && 'justify-center'}`}
             style={{ color: 'var(--label-secondary)' }}
             onMouseEnter={e => { e.currentTarget.style.color = 'var(--red)'; e.currentTarget.style.background = 'rgba(255,69,58,0.08)' }}
@@ -147,15 +200,15 @@ function HRAppShell() {
         {view === 'dashboard' && <Dashboard />}
         {view === 'candidates' && (
           selectedSession ? (
-            <SessionDetail session={selectedSession} onBack={() => setSelectedSession(null)} />
+            <SessionDetail session={selectedSession} onBack={() => { updateSelectedSession(null); updateView('candidates') }} />
           ) : (
-            <CandidateList onSessionClick={setSelectedSession} />
+            <CandidateList onSessionClick={(s) => updateSelectedSession(s)} />
           )
         )}
-        {view === 'new' && <CandidateForm onSuccess={() => setView('candidates')} />}
+        {view === 'new' && <CandidateForm onSuccess={() => { updateView('candidates'); updateSelectedSession(null) }} />}
         {view === 'proctoring' && <ProctoringDashboard />}
         {view === 'session' && selectedSession && (
-          <SessionDetail session={selectedSession} onBack={() => setSelectedSession(null)} />
+          <SessionDetail session={selectedSession} onBack={() => { updateSelectedSession(null); updateView('candidates') }} />
         )}
       </main>
     </div>

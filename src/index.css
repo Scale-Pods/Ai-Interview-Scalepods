@@ -661,3 +661,250 @@
   0%   { opacity: 1; transform: translateY(0) rotate(0deg); }
   100% { opacity: 0; transform: translateY(100vh) rotate(720deg); }
 }
+
+/* ─── Chat Interview Room ─────────────────────────────────────────────── */
+
+@keyframes bubble-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.96); }
+  to   { opacity: 1; transform: translateY(0)    scale(1); }
+}
+
+@keyframes typing-dot {
+  0%, 80%, 100% { transform: translateY(0);    opacity: 0.4; }
+  40%           { transform: translateY(-5px); opacity: 1; }
+}
+
+@keyframes avatar-ring-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(99,102,241,0.5); }
+  50%      { box-shadow: 0 0 0 6px rgba(99,102,241,0); }
+}
+
+@keyframes waveform-bar {
+  0%, 100% { transform: scaleY(0.4); }
+  50%      { transform: scaleY(1); }
+}
+
+/* Layout shell */
+.interview-chat-layout {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.chat-column {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+}
+
+.chat-feed {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1.5rem 1.25rem;
+  padding-bottom: 6rem;
+  scroll-behavior: smooth;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+/* ─── Bubbles ─────────────────────────────────────────────────────────── */
+
+.chat-bubble-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.625rem;
+  animation: bubble-in 0.28s cubic-bezier(0,0,0.2,1) both;
+}
+
+.chat-bubble-row.alex  { justify-content: flex-start; }
+.chat-bubble-row.candidate { justify-content: flex-end; }
+
+.bubble-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: #fff;
+  position: relative;
+  transition: box-shadow 0.3s ease;
+}
+
+.bubble-avatar.speaking {
+  animation: avatar-ring-pulse 1.4s ease-in-out infinite;
+}
+
+.bubble-body {
+  max-width: 72%;
+  padding: 0.75rem 1rem;
+  border-radius: 1.25rem;
+  position: relative;
+  line-height: 1.55;
+  font-size: 0.9375rem;
+}
+
+.bubble-alex .bubble-body {
+  border-bottom-left-radius: 0.375rem;
+  background: rgba(44, 44, 46, 0.85);
+  border: 1px solid rgba(255,255,255,0.08);
+  color: var(--label-primary);
+}
+
+.bubble-candidate .bubble-body {
+  border-bottom-right-radius: 0.375rem;
+  background: linear-gradient(135deg, #1d4ed8 0%, #3b82f6 100%);
+  color: #fff;
+  border: 1px solid rgba(255,255,255,0.12);
+}
+
+[data-theme="light"] .bubble-alex .bubble-body {
+  background: rgba(255,255,255,0.9);
+  border-color: rgba(0,0,0,0.08);
+}
+
+.bubble-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.3rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.75;
+}
+
+.bubble-label-alex {
+  color: var(--blue);
+}
+
+.bubble-label-candidate {
+  color: rgba(255,255,255,0.85);
+}
+
+.bubble-type-badge {
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 0.6rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* ─── Typing indicator ────────────────────────────────────────────────── */
+.typing-indicator-bubble {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0.625rem 0.875rem;
+  border-radius: 1.25rem;
+  border-bottom-left-radius: 0.375rem;
+  background: rgba(44, 44, 46, 0.85);
+  border: 1px solid rgba(255,255,255,0.08);
+  width: fit-content;
+}
+
+[data-theme="light"] .typing-indicator-bubble {
+  background: rgba(255,255,255,0.9);
+  border-color: rgba(0,0,0,0.08);
+}
+
+.typing-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--label-secondary);
+  animation: typing-dot 1.2s ease-in-out infinite;
+}
+.typing-dot:nth-child(2) { animation-delay: 0.15s; }
+.typing-dot:nth-child(3) { animation-delay: 0.30s; }
+
+/* ─── Speaking waveform bars inside bubble ────────────────────────────── */
+.bubble-speaking-bars {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 14px;
+  margin-left: 0.375rem;
+  vertical-align: middle;
+}
+
+.bubble-speaking-bar {
+  width: 3px;
+  border-radius: 2px;
+  background: var(--purple);
+  animation: waveform-bar 0.7s ease-in-out infinite;
+}
+.bubble-speaking-bar:nth-child(2) { animation-delay: 0.12s; }
+.bubble-speaking-bar:nth-child(3) { animation-delay: 0.24s; }
+.bubble-speaking-bar:nth-child(4) { animation-delay: 0.36s; }
+
+/* ─── Chat input bar ──────────────────────────────────────────────────── */
+.chat-input-bar {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 0.75rem 1rem;
+  background: rgba(28, 28, 30, 0.88);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border-top: 1px solid rgba(255,255,255,0.07);
+  z-index: 20;
+}
+
+[data-theme="light"] .chat-input-bar {
+  background: rgba(242, 242, 247, 0.92);
+  border-top-color: rgba(0,0,0,0.1);
+}
+
+.chat-input-inner {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.625rem 0.75rem;
+  border-radius: 1.25rem;
+  border: 1px solid rgba(255,255,255,0.1);
+  background: rgba(58,58,60,0.6);
+  min-height: 48px;
+  transition: border-color 0.2s;
+}
+
+[data-theme="light"] .chat-input-inner {
+  background: rgba(255,255,255,0.85);
+  border-color: rgba(0,0,0,0.12);
+}
+
+.chat-input-inner:focus-within {
+  border-color: rgba(10,132,255,0.45);
+}
+
+/* ─── Interview sidebar ───────────────────────────────────────────────── */
+.interview-sidebar {
+  width: 280px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem 1rem 1rem 0;
+  overflow-y: auto;
+}
+
+@media (max-width: 900px) {
+  .interview-sidebar {
+    display: none;
+  }
+  .chat-feed {
+    padding-bottom: 7rem;
+  }
+}
+

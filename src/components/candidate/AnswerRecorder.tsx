@@ -1,24 +1,43 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
+import type React from 'react'
+
 import { getAudioStream } from '@/utils/mediaHelpers'
 import { normalizeTechnicalSpeech } from '@/utils/speechNormalizer'
 import { DeepgramSTT } from '@/utils/deepgram'
 
 const SILENCE_TIMEOUT_MS = 4000
 const COUNTDOWN_TENTHS = Math.floor(SILENCE_TIMEOUT_MS / 100)
+const THINKING_TIMEOUT_MS = 25000 // 25 seconds max preparation / thinking limit
+const THINKING_TENTHS = Math.floor(THINKING_TIMEOUT_MS / 100)
 const VOICE_ACTIVITY_THRESHOLD = 2.5
+
+export interface AnswerRecorderState {
+  transcript: string
+  isThinking: boolean
+  silenceCountdown: number
+  countdownTenths: number
+  thinkingCountdown: number
+  thinkingCountdownTenths: number
+  isRecording: boolean
+}
 
 interface AnswerRecorderProps {
   onAnswerComplete: (text: string, audioBlob?: Blob) => void
+  onStateChange?: (state: AnswerRecorderState) => void
+  /** If provided, AnswerRecorder draws the waveform onto this external canvas (used by ChatInputBar) */
+  externalCanvasRef?: React.RefObject<HTMLCanvasElement | null>
   isAiSpeaking: boolean
   expired?: boolean
   endEarly?: boolean
   audioStream?: MediaStream | null
 }
 
-export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEarly, audioStream }: AnswerRecorderProps) {
+export function AnswerRecorder({ onAnswerComplete, onStateChange, externalCanvasRef, isAiSpeaking, expired, endEarly, audioStream }: AnswerRecorderProps) {
   const [duration, setDuration] = useState(0)
   const [transcript, setTranscript] = useState('')
   const [silenceCountdown, setSilenceCountdown] = useState(COUNTDOWN_TENTHS)
+  const [thinkingCountdown, setThinkingCountdown] = useState(THINKING_TENTHS)
+  const [isThinking, setIsThinking] = useState(false)
   const [sttProvider, setSttProvider] = useState<'deepgram' | 'webspeech' | 'none'>('none')
 
   const isRecordingRef = useRef(false)
@@ -28,6 +47,9 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
   const shouldSubmitRef = useRef(false)
   const silenceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const countdownIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const thinkingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const thinkingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const isThinkingRef = useRef(false)
   const generationRef = useRef(0)
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
@@ -41,6 +63,7 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
   const rafRef = useRef<number>(0)
   const audioActivityIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const isVoiceActiveRef = useRef(false)
+  const isCountdownActiveRef = useRef(false)
 
   const clearAudioActivityMonitor = useCallback(() => {
     if (audioActivityIntervalRef.current) {
@@ -48,6 +71,20 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
       audioActivityIntervalRef.current = null
     }
     isVoiceActiveRef.current = false
+  }, [])
+
+  const clearThinkingTimer = useCallback(() => {
+    if (thinkingTimeoutRef.current) {
+      clearTimeout(thinkingTimeoutRef.current)
+      thinkingTimeoutRef.current = null
+    }
+    if (thinkingIntervalRef.current) {
+      clearInterval(thinkingIntervalRef.current)
+      thinkingIntervalRef.current = null
+    }
+    isThinkingRef.current = false
+    setIsThinking(false)
+    setThinkingCountdown(THINKING_TENTHS)
   }, [])
 
   const clearCountdown = useCallback(() => {
@@ -59,11 +96,12 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
       clearTimeout(silenceTimeoutRef.current)
       silenceTimeoutRef.current = null
     }
+    isCountdownActiveRef.current = false
     setSilenceCountdown(COUNTDOWN_TENTHS)
   }, [])
 
   const drawWaveform = useCallback(() => {
-    const canvas = canvasRef.current
+    const canvas = externalCanvasRef?.current ?? canvasRef.current
     const analyser = analyserRef.current
     if (!canvas || !analyser) return
     const ctx = canvas.getContext('2d')
@@ -90,6 +128,8 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
     }
     ctx.stroke()
     rafRef.current = requestAnimationFrame(drawWaveform)
+  // externalCanvasRef intentionally omitted — it's a stable ref object
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const doSubmit = useCallback((text: string, blob?: Blob) => {
@@ -122,6 +162,7 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
     if (!isRecordingRef.current) return
     shouldSubmitRef.current = true
 
+    clearThinkingTimer()
     clearCountdown()
     isRecordingRef.current = false
 
@@ -135,10 +176,11 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
     if (intervalRef.current) clearInterval(intervalRef.current)
     clearAudioActivityMonitor()
     cancelAnimationFrame(rafRef.current)
-  }, [clearAudioActivityMonitor, clearCountdown, stopSTTEngines])
+  }, [clearAudioActivityMonitor, clearCountdown, clearThinkingTimer, stopSTTEngines])
 
   const stopRecordingSilently = useCallback(() => {
     shouldSubmitRef.current = false
+    clearThinkingTimer()
     clearCountdown()
     isRecordingRef.current = false
     setTranscript('')
@@ -153,23 +195,63 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
     if (intervalRef.current) clearInterval(intervalRef.current)
     clearAudioActivityMonitor()
     cancelAnimationFrame(rafRef.current)
-  }, [clearAudioActivityMonitor, clearCountdown, stopSTTEngines])
+  }, [clearAudioActivityMonitor, clearCountdown, clearThinkingTimer, stopSTTEngines])
+
+  const startThinkingTimer = useCallback(() => {
+    clearThinkingTimer()
+    if (!isRecordingRef.current) return
+
+    isThinkingRef.current = true
+    setIsThinking(true)
+    setThinkingCountdown(THINKING_TENTHS)
+
+    thinkingTimeoutRef.current = setTimeout(() => {
+      if (isThinkingRef.current && isRecordingRef.current) {
+        console.warn('Thinking time expired (25s) — auto submitting question')
+        clearThinkingTimer()
+        if (!transcriptRef.current.trim()) {
+          transcriptRef.current = 'No response provided within the 25-second thinking limit.'
+          setTranscript(transcriptRef.current)
+        }
+        stopAndSubmit()
+      }
+    }, THINKING_TIMEOUT_MS)
+
+    thinkingIntervalRef.current = setInterval(() => {
+      setThinkingCountdown(prev => {
+        if (prev <= 1) return 0
+        return prev - 1
+      })
+    }, 100)
+  }, [clearThinkingTimer, stopAndSubmit])
 
   const startCountdown = useCallback(() => {
-    clearCountdown()
+    // If candidate starts speaking or countdown begins, cancel thinking timer
+    if (isThinkingRef.current) {
+      clearThinkingTimer()
+    }
+
+    // If countdown is already active, do NOT reset or restart it
+    if (isCountdownActiveRef.current) return
     if (!isRecordingRef.current) return
+    if (transcriptRef.current.trim().length === 0) return
+
+    isCountdownActiveRef.current = true
+    setSilenceCountdown(COUNTDOWN_TENTHS)
+
     silenceTimeoutRef.current = setTimeout(() => {
       if (transcriptRef.current.trim().length > 0) {
         stopAndSubmit()
       }
     }, SILENCE_TIMEOUT_MS)
+
     countdownIntervalRef.current = setInterval(() => {
       setSilenceCountdown(prev => {
-        if (prev <= 0) return 0
+        if (prev <= 1) return 0
         return prev - 1
       })
     }, 100)
-  }, [clearCountdown, stopAndSubmit])
+  }, [clearThinkingTimer, stopAndSubmit])
 
   const startWebSpeechFallback = useCallback((gen: number) => {
     const SpeechRecognitionAPI = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
@@ -189,10 +271,17 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
         }
         
         const normalized = normalizeTechnicalSpeech(final)
+        const prevTranscript = transcriptRef.current
         setTranscript(normalized)
         transcriptRef.current = normalized
 
-        if (isVoiceActiveRef.current) {
+        if (final.trim().length > 0 && isThinkingRef.current) {
+          clearThinkingTimer()
+        }
+
+        // New words arriving = candidate is actively speaking → always reset the countdown
+        const newWordsAdded = normalized.trim().length > prevTranscript.trim().length
+        if (isVoiceActiveRef.current || newWordsAdded) {
           clearCountdown()
         } else if (final.trim().length > 0) {
           startCountdown()
@@ -213,7 +302,7 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
     } else {
       setSttProvider('none')
     }
-  }, [clearCountdown, startCountdown])
+  }, [clearCountdown, clearThinkingTimer, startCountdown])
 
   const startRecording = useCallback(async () => {
     if (isRecordingRef.current) return
@@ -260,8 +349,9 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
       analyserRef.current = analyser
 
       const freqData = new Uint8Array(analyser.frequencyBinCount)
-      let wasSpeaking = false
-      let ambientNoiseFloor = 8.0 // Adaptive baseline tracker
+      let ambientNoiseFloor = 0 // Calibrates to actual room mic noise baseline
+      let calibrationTicks = 0
+      let speechStreak = 0
       clearAudioActivityMonitor()
       
       setTimeout(() => {
@@ -277,26 +367,47 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
           }
           const vocalEnergy = vocalBandSum / vocalBinsCount
 
-          // Adaptive noise floor tracking: slowly adapt to ambient fan/room noise
-          if (vocalEnergy < ambientNoiseFloor) {
-            ambientNoiseFloor = ambientNoiseFloor * 0.9 + vocalEnergy * 0.1
-          } else {
-            ambientNoiseFloor = ambientNoiseFloor * 0.995 + vocalEnergy * 0.005
+          // Startup Calibration (first 10 ticks = 1s): sample room's initial fan/AC ambient noise baseline
+          if (calibrationTicks < 10) {
+            calibrationTicks++
+            ambientNoiseFloor = ambientNoiseFloor === 0
+              ? vocalEnergy
+              : Math.max(ambientNoiseFloor, vocalEnergy)
+            return
           }
 
-          // Voice activity detected when speech energy rises distinctly above ambient noise floor
-          const isSpeaking = vocalEnergy > (ambientNoiseFloor * 1.5 + 4.0)
+          // Dynamic Noise Floor Tracking
+          if (vocalEnergy < ambientNoiseFloor) {
+            ambientNoiseFloor = ambientNoiseFloor * 0.8 + vocalEnergy * 0.2
+          } else {
+            ambientNoiseFloor = ambientNoiseFloor * 0.992 + vocalEnergy * 0.008
+          }
+
+          // Voice activity detected when speech energy rises distinctly above room noise floor
+          const speechThreshold = Math.max(ambientNoiseFloor * 1.6, ambientNoiseFloor + 12.0)
+          const isSpeaking = vocalEnergy > speechThreshold
           isVoiceActiveRef.current = isSpeaking
 
           if (isSpeaking) {
-            wasSpeaking = true
+            speechStreak++
             clearCountdown()
-          } else if (wasSpeaking && transcriptRef.current.trim().length > 0) {
-            wasSpeaking = false
-            startCountdown()
+          } else {
+            speechStreak = 0
+            if (transcriptRef.current.trim().length > 0) {
+              if (isThinkingRef.current) {
+                clearThinkingTimer()
+              }
+              startCountdown()
+            }
+          }
+
+          // Human speech confirmed: either STT produced words OR 3 consecutive speech ticks (300ms)
+          const isConfirmedSpeech = speechStreak >= 3 || transcriptRef.current.trim().length > 0
+          if (isConfirmedSpeech && isThinkingRef.current) {
+            clearThinkingTimer()
           }
         }, 100)
-      }, 500)
+      }, 300)
 
       const recorder = new MediaRecorder(stream)
       chunksRef.current = []
@@ -327,6 +438,9 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
       isRecordingRef.current = true
       setDuration(0)
 
+      // Start 15-second Thinking Time Limit
+      startThinkingTimer()
+
       setTimeout(() => {
         drawWaveform()
       }, 50)
@@ -340,10 +454,17 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
             onTranscript: (rawText) => {
               if (gen !== generationRef.current) return
               const normalized = normalizeTechnicalSpeech(rawText)
+              const prevTranscript = transcriptRef.current
               setTranscript(normalized)
               transcriptRef.current = normalized
 
-              if (isVoiceActiveRef.current) {
+              if (rawText.trim().length > 0 && isThinkingRef.current) {
+                clearThinkingTimer()
+              }
+
+              // New words arriving = candidate is actively speaking → always reset the countdown
+              const newWordsAdded = normalized.trim().length > prevTranscript.trim().length
+              if (isVoiceActiveRef.current || newWordsAdded) {
                 clearCountdown()
               } else if (rawText.trim().length > 0) {
                 startCountdown()
@@ -367,7 +488,7 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
     } catch (err) {
       console.error('Failed to start recording stream:', err)
     }
-  }, [audioStream, clearAudioActivityMonitor, clearCountdown, doSubmit, drawWaveform, startCountdown, startWebSpeechFallback])
+  }, [audioStream, clearAudioActivityMonitor, clearCountdown, doSubmit, drawWaveform, startCountdown, startThinkingTimer, startWebSpeechFallback])
 
   // Effect: Auto trigger start/stop based on AI speaking status
   useEffect(() => {
@@ -417,6 +538,20 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
     }
   }, [transcript])
 
+  // Propagate live state to parent (for ChatInputBar / chat history)
+  useEffect(() => {
+    onStateChange?.({
+      transcript,
+      isThinking,
+      silenceCountdown,
+      countdownTenths: COUNTDOWN_TENTHS,
+      thinkingCountdown,
+      thinkingCountdownTenths: THINKING_TENTHS,
+      isRecording: isRecordingRef.current && !isAiSpeaking,
+    })
+  }, [transcript, isThinking, silenceCountdown, thinkingCountdown, isAiSpeaking, onStateChange])
+
+
   const minutes = Math.floor(duration / 60)
   const seconds = duration % 60
 
@@ -436,8 +571,17 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full animate-ping" style={{ background: 'var(--green)' }} />
-                <span className="text-xs font-semibold" style={{ color: 'var(--green)' }}>Listening</span>
+                {isThinking ? (
+                  <>
+                    <span className="w-2 h-2 rounded-full animate-ping" style={{ background: 'var(--orange)' }} />
+                    <span className="text-xs font-semibold" style={{ color: 'var(--orange)' }}>Thinking Time</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="w-2 h-2 rounded-full animate-ping" style={{ background: 'var(--green)' }} />
+                    <span className="text-xs font-semibold" style={{ color: 'var(--green)' }}>Listening</span>
+                  </>
+                )}
                 <span className="px-2 py-0.5 text-[10px] font-medium rounded-md flex items-center gap-1"
                   style={{
                     background: 'rgba(16, 185, 129, 0.1)',
@@ -472,23 +616,43 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
                 )}
               </div>
               <div className="flex items-center gap-3">
-                <div className="flex items-center gap-1.5">
-                  <svg width="16" height="16" viewBox="0 0 16 16" className="transform -rotate-90">
-                    <circle cx="8" cy="8" r="6.5" fill="none" stroke="var(--fill-tertiary)" strokeWidth="2" />
-                    <circle
-                      cx="8" cy="8" r="6.5" fill="none"
-                      stroke={silenceCountdown < 5 ? 'var(--red)' : silenceCountdown < 12 ? 'var(--orange)' : 'var(--blue)'}
-                      strokeWidth="2"
-                      strokeDasharray={`${(silenceCountdown / COUNTDOWN_TENTHS) * 40.84} 40.84`}
-                      strokeLinecap="round"
-                      className="transition-all duration-100"
-                    />
-                  </svg>
-                  <span className="text-[10px] font-mono font-bold"
-                    style={{ color: silenceCountdown < 5 ? 'var(--red)' : silenceCountdown < 12 ? 'var(--orange)' : 'var(--label-secondary)' }}>
-                    {(silenceCountdown / 10).toFixed(1)}s
-                  </span>
-                </div>
+                {isThinking ? (
+                  <div className="flex items-center gap-1.5" title="Time remaining to begin speaking or typing your response">
+                    <svg width="16" height="16" viewBox="0 0 16 16" className="transform -rotate-90">
+                      <circle cx="8" cy="8" r="6.5" fill="none" stroke="var(--fill-tertiary)" strokeWidth="2" />
+                      <circle
+                        cx="8" cy="8" r="6.5" fill="none"
+                        stroke={thinkingCountdown < 30 ? 'var(--red)' : thinkingCountdown < 70 ? 'var(--orange)' : 'var(--blue)'}
+                        strokeWidth="2"
+                        strokeDasharray={`${(thinkingCountdown / THINKING_TENTHS) * 40.84} 40.84`}
+                        strokeLinecap="round"
+                        className="transition-all duration-100"
+                      />
+                    </svg>
+                    <span className="text-[10px] font-mono font-bold"
+                      style={{ color: thinkingCountdown < 30 ? 'var(--red)' : thinkingCountdown < 70 ? 'var(--orange)' : 'var(--label-secondary)' }}>
+                      {(thinkingCountdown / 10).toFixed(1)}s limit
+                    </span>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-1.5" title="Silence countdown before auto-submission">
+                    <svg width="16" height="16" viewBox="0 0 16 16" className="transform -rotate-90">
+                      <circle cx="8" cy="8" r="6.5" fill="none" stroke="var(--fill-tertiary)" strokeWidth="2" />
+                      <circle
+                        cx="8" cy="8" r="6.5" fill="none"
+                        stroke={silenceCountdown < 5 ? 'var(--red)' : silenceCountdown < 12 ? 'var(--orange)' : 'var(--blue)'}
+                        strokeWidth="2"
+                        strokeDasharray={`${(silenceCountdown / COUNTDOWN_TENTHS) * 40.84} 40.84`}
+                        strokeLinecap="round"
+                        className="transition-all duration-100"
+                      />
+                    </svg>
+                    <span className="text-[10px] font-mono font-bold"
+                      style={{ color: silenceCountdown < 5 ? 'var(--red)' : silenceCountdown < 12 ? 'var(--orange)' : 'var(--label-secondary)' }}>
+                      {(silenceCountdown / 10).toFixed(1)}s
+                    </span>
+                  </div>
+                )}
                 <span className="text-xs font-mono font-bold" style={{ color: 'var(--label-secondary)' }}>
                   {minutes.toString().padStart(2, '0')}:{seconds.toString().padStart(2, '0')}
                 </span>
@@ -510,13 +674,16 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
                 const val = e.target.value
                 setTranscript(val)
                 transcriptRef.current = val
+                if (isThinkingRef.current) {
+                  clearThinkingTimer()
+                }
                 if (isVoiceActiveRef.current) {
                   clearCountdown()
                 } else if (val.trim().length > 0) {
                   startCountdown()
                 }
               }}
-              placeholder="Speak your response now (you can also edit or type words here)..."
+              placeholder={isThinking ? "Speak your response now (you have 25s to begin speaking)..." : "Speak your response now (you can also edit or type words here)..."}
               className="w-full text-sm leading-relaxed font-medium rounded-xl p-3 min-h-[70px] max-h-[400px] overflow-y-auto transition-all duration-150 resize-none"
               style={{
                 background: 'var(--fill-quaternary)',
@@ -527,7 +694,9 @@ export function AnswerRecorder({ onAnswerComplete, isAiSpeaking, expired, endEar
 
             <div className="flex items-center justify-between gap-3">
               <p className="text-[10px]" style={{ color: 'var(--label-tertiary)' }}>
-                Auto-submits after {(SILENCE_TIMEOUT_MS / 1000).toFixed(0)}s of silence
+                {isThinking
+                  ? "Start speaking within 25s | Auto-submits after 4s of silence once spoken"
+                  : `Auto-submits after ${(SILENCE_TIMEOUT_MS / 1000).toFixed(0)}s of silence`}
               </p>
               <button
                 onClick={stopAndSubmit}

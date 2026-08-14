@@ -1,6 +1,7 @@
 import { useEffect, useCallback, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import { AlertCircle, CheckCircle, Clock, Camera, Monitor, Upload, Loader2, Sparkles, Volume2 } from 'lucide-react'
+import { AlertCircle, CheckCircle, Clock, Monitor, Upload, Loader2, PhoneOff } from 'lucide-react'
+
 import { useInterviewContext } from '@/context/InterviewContext'
 import { useProctoringContext } from '@/context/ProctoringContext'
 import { LoadingSpinner } from '@/components/common/LoadingSpinner'
@@ -8,12 +9,16 @@ import { getCameraStream, getScreenStream, getAudioStream } from '@/utils/mediaH
 import { useTTSEngine } from '@/utils/tts'
 import { useInterviewTimer } from '@/hooks/useInterviewTimer'
 import { AnswerRecorder } from './AnswerRecorder'
+import type { AnswerRecorderState } from './AnswerRecorder'
 import { Completion } from './Completion'
 import { PreCheck } from './PreCheck'
-import { QuestionDisplay, extractLeadIn } from './QuestionDisplay'
+import { extractLeadIn } from './QuestionDisplay'
 import { VideoFeed } from './VideoFeed'
 import { ProctoringOverlay } from './ProctoringOverlay'
 import { RecruiterPersona } from './RecruiterPersona'
+import { ChatBubble, TypingBubble } from './ChatBubble'
+import type { ChatMessage } from './ChatBubble'
+import { ChatInputBar } from './ChatInputBar'
 
 const INTERVIEW_TIME_MINUTES = 25
 const DEFAULT_TARGET_QUESTIONS = 11
@@ -63,6 +68,20 @@ export function InterviewRoom() {
   const [currentlySpeakingText, setCurrentlySpeakingText] = useState('')
   const [speakingPhase, setSpeakingPhase] = useState<'acknowledgment' | 'question' | null>(null)
   const [activeVideoTab, setActiveVideoTab] = useState<'camera' | 'screen'>('camera')
+
+  // ── Chat UI state ─────────────────────────────────────────────────────
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
+  const [recorderState, setRecorderState] = useState<AnswerRecorderState>({
+    transcript: '', isThinking: false, silenceCountdown: 40, countdownTenths: 40,
+    thinkingCountdown: 250, thinkingCountdownTenths: 250, isRecording: false
+  })
+
+  const chatFeedRef = useRef<HTMLDivElement>(null)
+  const waveformCanvasRef = useRef<HTMLCanvasElement>(null)
+  // Used to trigger manual submit from ChatInputBar → AnswerRecorder
+  const stopAndSubmitRef = useRef<(() => void) | null>(null)
+  // Track the ID of the current Alex bubble so we can update its status
+  const currentAlexBubbleIdRef = useRef<string | null>(null)
 
   const TURN_GEN_MESSAGES = [
     { text: 'Reviewing your answer details...', detail: 'Processing key points & practical evidence' },
@@ -223,6 +242,53 @@ export function InterviewRoom() {
     }
   }, [currentTurn, avStream, cancel, speak])
 
+  // ── Build chat message history ─────────────────────────────────────────
+  // When a new turn arrives, push an Alex bubble; when TTS ends, mark it done.
+  useEffect(() => {
+    if (!currentTurn || !avStream) return
+    const questionText = currentTurn.question_text || currentTurn.interviewer_text
+    const bubbleId = `alex-${currentTurn.turn_type}-${Date.now()}`
+    currentAlexBubbleIdRef.current = bubbleId
+
+    const newMsg: ChatMessage = {
+      id: bubbleId,
+      role: 'alex',
+      text: questionText,
+      phase: currentTurn.turn_type === 'closing' ? 'closing' : 'question',
+      questionType: (currentTurn.question_type as ChatMessage['questionType']) || 'technical',
+      isFollowUp: currentTurn.turn_type === 'follow_up',
+      status: 'speaking',
+      timestamp: Date.now(),
+    }
+    setChatMessages(prev => [...prev, newMsg])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentTurn?.interviewer_text, avStream])
+
+  // Auto-scroll chat to bottom on every new message
+  useEffect(() => {
+    if (chatFeedRef.current) {
+      chatFeedRef.current.scrollTop = chatFeedRef.current.scrollHeight
+    }
+  }, [chatMessages])
+
+  // Update onSpeakCompleteRef to also mark the current Alex bubble as done
+  onSpeakCompleteRef.current = () => {
+    isAiSpeakingRef.current = false
+    setIsAiSpeaking(false)
+    setCurrentlySpeakingText('')
+    setSpeakingPhase(null)
+    // Mark the bubble done
+    const bid = currentAlexBubbleIdRef.current
+    if (bid) {
+      setChatMessages(prev => prev.map(m => m.id === bid ? { ...m, status: 'done' } : m))
+    }
+    if (currentTurn?.turn_type === 'closing' && !completionStartedRef.current) {
+      setTimeout(() => {
+        if (!completionStartedRef.current) finishInterview()
+      }, 3000)
+    }
+  }
+
   useEffect(() => {
     if (globalTimer.isExpired && session?.status !== 'completed' && !completionStartedRef.current) {
       speak("Your time has expired. We are wrapping up the interview now. Thank you for your time.", () => {
@@ -249,6 +315,16 @@ export function InterviewRoom() {
       setLastError('The active question was not ready. Please wait for the interviewer to repeat it.')
       return
     }
+
+    // Append candidate bubble to chat immediately
+    const candidateBubble: ChatMessage = {
+      id: `candidate-${Date.now()}`,
+      role: 'candidate',
+      text: text || 'Candidate responded via voice.',
+      answerStatus: 'submitted',
+      timestamp: Date.now(),
+    }
+    setChatMessages(prev => [...prev, candidateBubble])
 
     setAnswerState('saving')
     setLastError('')
@@ -284,6 +360,8 @@ export function InterviewRoom() {
     }
   }, [currentQuestionId, currentTurn, submitAnswer, generateNextTurn, endEarly, finishInterview])
 
+
+
   if (loading || !session) {
     if (!loading && !session) {
       return (
@@ -316,12 +394,9 @@ export function InterviewRoom() {
           <p className="text-sm mb-6 max-w-sm mx-auto" style={{ color: 'var(--label-secondary)' }}>
             Please wait while we securely save your responses and finalize the recording.
           </p>
-          <div className="flex items-center justify-center gap-2 text-sm" style={{ color: 'var(--blue)' }}>
-            <Loader2 size={16} className="animate-spin" />
+          <div className="flex items-center justify-center gap-2 text-sm mt-4" style={{ color: 'var(--blue)' }}>
+            <Loader2 size={18} className="animate-spin" />
             <span>Processing...</span>
-          </div>
-          <div className="mt-6 h-1.5 rounded-full overflow-hidden max-w-xs mx-auto" style={{ background: 'var(--fill-quaternary)' }}>
-            <div className="h-full rounded-full animate-pulse" style={{ width: '60%', background: 'var(--blue)' }} />
           </div>
           {completingError && (
             <div className="mt-4 flex items-center gap-2 px-4 py-3 rounded-xl" style={{ background: 'color-mix(in srgb, var(--red) 10%, transparent)', border: '1px solid color-mix(in srgb, var(--red) 20%, transparent)' }}>
@@ -384,270 +459,177 @@ export function InterviewRoom() {
   const isClosingTurn = currentTurn?.turn_type === 'closing'
 
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="min-h-screen flex flex-col" style={{ height: '100dvh', overflow: 'hidden' }}>
       {session && <ProctoringOverlay violations={violations} sessionId={session.id} />}
 
-      <header style={{ borderBottom: '1px solid var(--separator)', background: 'rgba(28,28,30,0.6)', backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)' }} className="sticky top-0 z-30">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex flex-col sm:flex-row gap-2 sm:items-center sm:justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: 'var(--blue)' }}>
-              <Monitor size={16} className="text-white" />
+      {/* ─── Header ──────────────────────────────────────────────── */}
+      <header style={{ borderBottom: '1px solid var(--separator)', background: 'rgba(28,28,30,0.6)', backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)' }} className="sticky top-0 z-30 shrink-0">
+        <div className="px-4 sm:px-5 py-3 flex flex-col gap-2">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: 'var(--blue)' }}>
+                <Monitor size={16} className="text-white" />
+              </div>
+              <div>
+                <h1 className="text-sm font-bold" style={{ color: 'var(--label-primary)' }}>AI Interview</h1>
+                <p className="text-[10px]" style={{ color: 'var(--label-tertiary)' }}>{session.candidates_ai_interview?.name || 'Candidate'}</p>
+              </div>
             </div>
-            <div>
-              <h1 className="text-sm font-bold" style={{ color: 'var(--label-primary)' }}>AI Interview</h1>
-              <p className="text-[10px]" style={{ color: 'var(--label-tertiary)' }}>{session.candidates_ai_interview?.name || 'Candidate'}</p>
-            </div>
-          </div>
 
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-1.5 text-sm font-mono font-bold" style={{ color: timerColor }}>
-              <Clock size={14} />
-              <span style={{ fontVariantNumeric: 'tabular-nums' }}>{globalTimer.formatted}</span>
-              {globalTimer.isWarning && !globalTimer.isExpired && (
-                <span className="text-[10px] font-normal ml-1" style={{ color: 'color-mix(in srgb, var(--orange) 70%, transparent)' }}>Warning</span>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-1.5 text-sm font-mono font-bold" style={{ color: timerColor }}>
+                <Clock size={14} />
+                <span style={{ fontVariantNumeric: 'tabular-nums' }}>{globalTimer.formatted}</span>
+                {globalTimer.isWarning && !globalTimer.isExpired && (
+                  <span className="text-[10px] font-normal ml-1" style={{ color: 'color-mix(in srgb, var(--orange) 70%, transparent)' }}>Warning</span>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2 px-3 py-1 rounded-full text-[10px] font-medium badge-red">
+                <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: 'var(--red)' }} />
+                <span className="font-mono" style={{ fontVariantNumeric: 'tabular-nums' }}>{Math.floor(recordingDuration / 60)}:{(recordingDuration % 60).toString().padStart(2, '0')}</span>
+              </div>
+              {recordingError && (
+                <div className="flex items-center gap-1.5 text-[10px]" style={{ color: 'var(--red)' }}>
+                  <AlertCircle size={12} />
+                  {recordingError}
+                </div>
               )}
             </div>
+          </div>
 
-            <div className="flex items-center gap-2 px-3 py-1 rounded-full text-[10px] font-medium badge-red">
-              <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: 'var(--red)' }} />
-              <span className="font-mono" style={{ fontVariantNumeric: 'tabular-nums' }}>{Math.floor(recordingDuration / 60)}:{(recordingDuration % 60).toString().padStart(2, '0')}</span>
+
+          {/* Progress bar */}
+          <div>
+            <div className="flex items-center gap-1">
+              {Array.from({ length: progressTarget }).map((_, i) => {
+                const isActive = i === primaryBarIndex && !isClosingTurn
+                const isDone = i < primaryBarIndex || isClosingTurn
+                return (
+                  <div key={i} className="flex items-center gap-1 flex-1">
+                    <div className="w-full h-1 rounded-full transition-all duration-500" style={{
+                      background: isActive ? 'var(--blue)' : isDone ? 'var(--green)' : 'var(--fill-tertiary)',
+                    }} />
+                  </div>
+                )
+              })}
             </div>
-            {recordingStatus === 'recording' && (
-              <div className="flex items-center gap-1.5 text-[10px]" style={{ color: 'var(--label-tertiary)' }}>
-                <span className="w-1 h-1 rounded-full" style={{ background: 'var(--green)' }} />
-                Recording
-              </div>
-            )}
-            {recordingError && (
-              <div className="flex items-center gap-1.5 text-[10px]" style={{ color: 'var(--red)' }}>
-                <AlertCircle size={12} />
-                {recordingError}
-              </div>
-            )}
-
-            {!showEndConfirm ? (
-              <button
-                onClick={() => setShowEndConfirm(true)}
-                className="text-[10px] px-2.5 py-1 rounded-lg transition-all"
-                style={{ color: 'var(--label-secondary)', border: '1px solid var(--separator)' }}
-              >
-                End Interview
-              </button>
-            ) : (
-              <div className="flex items-center gap-2 animate-fade-in">
-                <span className="text-[10px] font-medium" style={{ color: 'var(--red)' }}>End early?</span>
-                <button
-                  onClick={() => {
-                    setShowEndConfirm(false)
-                    setEndEarly(true)
-                  }}
-                  className="text-[10px] text-white px-2.5 py-1 rounded-lg transition-all"
-                  style={{ background: 'var(--red)' }}
-                >
-                  Yes
-                </button>
-                <button
-                  onClick={() => setShowEndConfirm(false)}
-                  className="text-[10px] px-2.5 py-1 rounded-lg transition-all"
-                  style={{ color: 'var(--label-secondary)', border: '1px solid var(--separator)' }}
-                >
-                  No
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 pb-3">
-          <div className="flex items-center gap-1">
-            {Array.from({ length: progressTarget }).map((_, i) => {
-              const isActive = i === primaryBarIndex && !isClosingTurn
-              const isDone = i < primaryBarIndex || isClosingTurn
-              return (
-                <div key={i} className="flex items-center gap-1 flex-1">
-                  <div className="w-full h-1 rounded-full transition-all duration-500" style={{
-                    background: isActive ? 'var(--blue)' : isDone ? 'var(--green)' : 'var(--fill-tertiary)',
-                  }} />
-                </div>
-              )
-            })}
-          </div>
-          <div className="flex items-center justify-center gap-2 mt-1.5">
-            <p className="text-[10px]" style={{ color: 'var(--label-tertiary)' }}>
-              Question {Math.min(primaryBarIndex + 1, progressTarget)} of {progressTarget}
-            </p>
-            {isCurrentFollowUp && (
-              <span
-                className="text-[9px] px-1.5 py-0.5 rounded-md font-bold uppercase tracking-wider"
-                style={{
+            <div className="flex items-center justify-center gap-2 mt-1">
+              <p className="text-[10px]" style={{ color: 'var(--label-tertiary)' }}>
+                Question {Math.min(primaryBarIndex + 1, progressTarget)} of {progressTarget}
+              </p>
+              {isCurrentFollowUp && (
+                <span className="text-[9px] px-1.5 py-0.5 rounded-md font-bold uppercase tracking-wider" style={{
                   background: 'color-mix(in srgb, var(--purple) 15%, transparent)',
                   color: 'var(--purple)',
                   border: '1px solid color-mix(in srgb, var(--purple) 25%, transparent)'
-                }}
-              >
-                Follow-up
-              </span>
-            )}
+                }}>
+                  Follow-up
+                </span>
+              )}
+            </div>
           </div>
         </div>
       </header>
 
-      <main className="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 py-6 grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
-        <section className="lg:col-span-2 space-y-6">
-          {/* Live speech caption — shows exactly what Alex is currently reading aloud */}
-          {isAiSpeaking && currentlySpeakingText && (
-            <div
-              className="flex items-start gap-3 px-4 py-3 rounded-2xl animate-fade-in"
-              style={{
-                background: speakingPhase === 'acknowledgment'
-                  ? 'color-mix(in srgb, var(--blue) 8%, transparent)'
-                  : 'color-mix(in srgb, var(--purple) 8%, transparent)',
-                border: speakingPhase === 'acknowledgment'
-                  ? '1px solid color-mix(in srgb, var(--blue) 25%, transparent)'
-                  : '1px solid color-mix(in srgb, var(--purple) 25%, transparent)',
-              }}
-            >
-              <div
-                className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 mt-0.5"
-                style={{
-                  background: speakingPhase === 'acknowledgment' ? 'var(--blue)' : 'var(--purple)'
-                }}
-              >
-                <Volume2 size={13} className="text-white" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <p
-                  className="text-[10px] font-semibold mb-1 uppercase tracking-wider"
-                  style={{
-                    color: speakingPhase === 'acknowledgment' ? 'var(--blue)' : 'var(--purple)'
-                  }}
-                >
-                  {speakingPhase === 'acknowledgment' ? '🎤 Alex — Acknowledgment' : '🎤 Alex — Question'}
-                </p>
-                <p className="text-sm leading-relaxed" style={{ color: 'var(--label-primary)' }}>
-                  &ldquo;{currentlySpeakingText}&rdquo;
-                </p>
-              </div>
-              {/* Animated equalizer bars */}
-              <div className="flex items-end gap-[3px] h-5 shrink-0 mt-1">
-                {[0, 1, 2, 3].map(i => (
-                  <div
-                    key={i}
-                    className="w-[3px] rounded-full animate-pulse"
-                    style={{
-                      height: `${[60, 100, 80, 40][i]}%`,
-                      background: speakingPhase === 'acknowledgment' ? 'var(--blue)' : 'var(--purple)',
-                      animationDelay: `${i * 0.15}s`,
-                      animationDuration: '0.8s'
-                    }}
-                  />
-                ))}
-              </div>
-            </div>
-          )}
+      {/* ─── Main chat layout ─────────────────────────────────────── */}
+      <div className="interview-chat-layout flex-1">
 
+        {/* Chat column */}
+        <div className="chat-column">
+          {/* Scrollable chat feed */}
+          <div className="chat-feed" ref={chatFeedRef}>
+            {chatMessages.length === 0 && (
+              <div className="flex flex-col items-center justify-center flex-1 gap-3 py-12 opacity-40">
+                <div className="w-12 h-12 rounded-2xl flex items-center justify-center" style={{ background: 'var(--fill-quaternary)' }}>
+                  <Monitor size={20} style={{ color: 'var(--label-tertiary)' }} />
+                </div>
+                <p className="text-sm" style={{ color: 'var(--label-tertiary)' }}>Interview starting…</p>
+              </div>
+            )}
+
+            {chatMessages.map(msg => (
+              <ChatBubble key={msg.id} message={msg} />
+            ))}
+
+            {/* Typing indicator while generating next question */}
+            {isGeneratingTurn && <TypingBubble />}
+
+            {/* Timer expired notice */}
+            {globalTimer.isExpired && (
+              <div className="flex items-center gap-2 px-4 py-3 rounded-xl animate-fade-in self-center" style={{ background: 'color-mix(in srgb, var(--red) 10%, transparent)', border: '1px solid color-mix(in srgb, var(--red) 20%, transparent)' }}>
+                <AlertCircle size={16} className="shrink-0" style={{ color: 'var(--red)' }} />
+                <p className="text-sm" style={{ color: 'var(--red)' }}>Time's up! The interview is ending.</p>
+              </div>
+            )}
+
+            {/* Save state feedback inside chat */}
+            {(answerState === 'saving' || answerState === 'saved' || answerState === 'error') && (
+              <div className="flex justify-center animate-fade-in">
+                <div className="text-xs px-3 py-1.5 rounded-full" style={{
+                  background: answerState === 'error' ? 'color-mix(in srgb, var(--red) 12%, transparent)' : 'var(--fill-quaternary)',
+                  border: '1px solid var(--separator)',
+                  color: answerState === 'saving' ? 'var(--blue)' : answerState === 'saved' ? 'var(--green)' : 'var(--red)'
+                }}>
+                  {answerState === 'saving' && (
+                    <span className="flex items-center gap-1.5">
+                      <Loader2 size={11} className="animate-spin" /> Saving response…
+                    </span>
+                  )}
+                  {answerState === 'saved' && (
+                    <span className="flex items-center gap-1.5">
+                      <CheckCircle size={11} /> Response saved
+                    </span>
+                  )}
+                  {answerState === 'error' && (
+                    <span className="flex items-center gap-1.5">
+                      <AlertCircle size={11} /> {lastError}
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Closing message */}
+            {isClosingTurn && !isAiSpeaking && (
+              <div className="flex flex-col items-center gap-2 py-6 animate-fade-in">
+                <CheckCircle size={32} style={{ color: 'var(--green)' }} />
+                <p className="text-sm font-medium" style={{ color: 'var(--label-secondary)' }}>
+                  Thank you! Your responses have been recorded.
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* ── Fixed bottom input bar ────────────────────────────── */}
+          <ChatInputBar
+            recorderState={recorderState}
+            isAiSpeaking={isAiSpeaking}
+            isGeneratingTurn={isGeneratingTurn}
+            isAnalyzingAnswer={isAnalyzingAnswer}
+            onManualSubmit={() => stopAndSubmitRef.current?.()}
+            canvasRef={waveformCanvasRef}
+          />
+
+          {/* Hidden AnswerRecorder — all logic runs here, UI is suppressed */}
           {currentTurn && !isClosingTurn && (
-            <QuestionDisplay
-              question={{
-                id: currentQuestionId || '',
-                session_id: session.id,
-                question_text: currentTurn.question_text || currentTurn.interviewer_text,
-                question_type: currentTurn.question_type || 'technical',
-                source: currentTurn.turn_type === 'follow_up' ? 'llm_ts_followup' : 'llm_ts_dynamic',
-                order_index: currentQuestionIndex,
-                created_at: ''
-              }}
-              questionNumber={currentQuestionIndex}
-              totalQuestions={progressTarget}
-              interviewerUtterance={currentTurn.interviewer_text}
-              isAiSpeaking={isAiSpeaking}
-              speakingPhase={speakingPhase}
-            />
-          )}
-
-          {currentTurn && isClosingTurn && (
-            <div className="w-full animate-fade-in">
-              <div className="card p-6 sm:p-8" style={{ borderLeft: '4px solid color-mix(in srgb, var(--green) 40%, transparent)' }}>
-                <p className="text-lg sm:text-xl leading-relaxed font-medium" style={{ color: 'var(--label-primary)' }}>
-                  {currentTurn.interviewer_text}
-                </p>
-              </div>
-            </div>
-          )}
-
-          {globalTimer.isExpired && (
-            <div className="flex items-center gap-2 px-4 py-3 rounded-xl animate-fade-in" style={{ background: 'color-mix(in srgb, var(--red) 10%, transparent)', border: '1px solid color-mix(in srgb, var(--red) 20%, transparent)' }}>
-              <AlertCircle size={16} className="shrink-0" style={{ color: 'var(--red)' }} />
-              <p className="text-sm" style={{ color: 'var(--red)' }}>Time's up! The interview is ending.</p>
-            </div>
-          )}
-
-          {isGeneratingTurn ? (
-            <div className="flex flex-col items-center justify-center p-6 rounded-xl border border-blue-500/20" style={{ background: 'color-mix(in srgb, var(--blue) 5%, var(--fill-quaternary))' }}>
-              <div className="relative flex items-center justify-center mb-3">
-                <div className="h-8 w-8 rounded-full animate-spin" style={{ border: '3px solid rgba(59,130,246,0.2)', borderTopColor: 'var(--blue)' }} />
-                <Sparkles size={14} className="absolute text-blue-400 animate-pulse" />
-              </div>
-              <p className="text-sm font-medium transition-all text-center" style={{ color: 'var(--label-primary)' }}>
-                {TURN_GEN_MESSAGES[turnGenStep].text}
-              </p>
-              <p className="text-xs transition-all text-center mt-1" style={{ color: 'var(--label-tertiary)' }}>
-                {TURN_GEN_MESSAGES[turnGenStep].detail}
-              </p>
-              <div className="w-full max-w-xs h-1 rounded-full overflow-hidden mt-3" style={{ background: 'rgba(255,255,255,0.08)' }}>
-                <div
-                  className="h-full rounded-full transition-all duration-700 ease-out"
-                  style={{
-                    width: `${((turnGenStep + 1) / TURN_GEN_MESSAGES.length) * 100}%`,
-                    background: 'linear-gradient(90deg, #3b82f6, #10b981)'
-                  }}
-                />
-              </div>
-            </div>
-          ) : (
-            currentTurn && !isClosingTurn && (
+            <div style={{ position: 'absolute', width: 0, height: 0, overflow: 'hidden', pointerEvents: 'none' }} aria-hidden>
               <AnswerRecorder
                 key={currentQuestionId}
                 onAnswerComplete={handleAnswerComplete}
+                onStateChange={setRecorderState}
+                externalCanvasRef={waveformCanvasRef}
                 isAiSpeaking={isAiSpeaking}
                 expired={globalTimer.isExpired}
                 endEarly={endEarly}
                 audioStream={audioStream}
               />
-            )
-          )}
-
-          {isClosingTurn && !isAiSpeaking && (
-            <div className="flex flex-col items-center gap-3 pt-4">
-              <p className="text-sm" style={{ color: 'var(--label-secondary)' }}>
-                Thank you for completing the interview. Your responses have been recorded.
-              </p>
             </div>
           )}
+        </div>
 
-          <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
-            <div className="min-h-6 text-sm text-center">
-              {answerState === 'saving' && (
-                <span className="inline-flex items-center gap-1.5" style={{ color: 'var(--blue)' }}>
-                  <div className="h-3 w-3 rounded-full animate-spin" style={{ border: '2px solid rgba(120,120,128,0.3)', borderTopColor: 'var(--blue)' }} />
-                  Saving your response...
-                </span>
-              )}
-              {answerState === 'saved' && (
-                <span className="inline-flex items-center gap-1.5 animate-fade-in" style={{ color: 'var(--green)' }}>
-                  <CheckCircle size={15} /> Response saved
-                </span>
-              )}
-              {answerState === 'error' && (
-                <span className="inline-flex items-center gap-1.5" style={{ color: 'var(--red)' }}>
-                  <AlertCircle size={14} /> {lastError}
-                </span>
-              )}
-            </div>
-          </div>
-        </section>
-
-        <aside className="space-y-4">
+        {/* ─── Right sidebar ────────────────────────────────────── */}
+        <aside className="interview-sidebar">
           <RecruiterPersona
             isAiSpeaking={isAiSpeaking}
             isAnalyzingAnswer={isAnalyzingAnswer}
@@ -703,9 +685,56 @@ export function InterviewRoom() {
               <VideoFeed stream={screenStream} muted mirrored={false} label="Screen" className="aspect-video rounded-xl overflow-hidden shadow-inner" />
             )}
           </div>
+
+          {!showEndConfirm ? (
+            <button
+              onClick={() => setShowEndConfirm(true)}
+              className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl text-xs font-semibold transition-all hover:opacity-90 active:scale-[0.98]"
+              style={{
+                color: 'var(--red)',
+                background: 'color-mix(in srgb, var(--red) 10%, transparent)',
+                border: '1px solid color-mix(in srgb, var(--red) 25%, transparent)'
+              }}
+            >
+              <PhoneOff size={14} />
+              <span>End Interview</span>
+            </button>
+          ) : (
+            <div
+              className="w-full p-3.5 rounded-xl flex flex-col gap-2.5 animate-fade-in text-center"
+              style={{
+                background: 'color-mix(in srgb, var(--red) 12%, transparent)',
+                border: '1px solid color-mix(in srgb, var(--red) 30%, transparent)'
+              }}
+            >
+              <div className="flex items-center justify-center gap-1.5 text-xs font-semibold" style={{ color: 'var(--red)' }}>
+                <PhoneOff size={14} />
+                <span>End interview early?</span>
+              </div>
+              <p className="text-[11px]" style={{ color: 'var(--label-secondary)' }}>
+                Are you sure you want to end the session now?
+              </p>
+              <div className="flex items-center justify-center gap-2 pt-0.5">
+                <button
+                  onClick={() => { setShowEndConfirm(false); setEndEarly(true) }}
+                  className="flex-1 py-1.5 px-3 rounded-lg text-xs font-bold text-white transition-all shadow-sm active:scale-95"
+                  style={{ background: 'var(--red)' }}
+                >
+                  Yes, End
+                </button>
+                <button
+                  onClick={() => setShowEndConfirm(false)}
+                  className="flex-1 py-1.5 px-3 rounded-lg text-xs font-medium transition-all active:scale-95"
+                  style={{ color: 'var(--label-primary)', background: 'var(--fill-tertiary)', border: '1px solid var(--separator)' }}
+                >
+                  No
+                </button>
+              </div>
+            </div>
+          )}
         </aside>
-      </main>
+
+      </div>
     </div>
   )
 }
-

@@ -101,20 +101,44 @@ export function useTTSEngine(): TTSEngine {
     }
   }, [cancel])
 
+function prepareTextForTTS(text: string): string {
+  if (!text) return ''
+  let cleaned = text
+  const acronyms: Array<[RegExp, string]> = [
+    [/\bn8n\b/gi, 'N-8-N'],
+    [/\bgrpc\b/gi, 'g-R-P-C'],
+    [/\bfastapi\b/gi, 'Fast API'],
+    [/\bpostgresql\b/gi, 'Postgres-Q-L'],
+    [/\bpostgres\b/gi, 'Postgres'],
+    [/\bci\/cd\b/gi, 'C-I C-D'],
+    [/\bui\/ux\b/gi, 'U-I U-X'],
+    [/\bgraphql\b/gi, 'Graph Q L'],
+    [/\b([a-z])8([a-z])\b/gi, '$1 8 $2'], // generic X8Y pattern
+  ]
+  for (const [pattern, replacement] of acronyms) {
+    cleaned = cleaned.replace(pattern, replacement)
+  }
+  return cleaned
+}
+
   const speakWithDeepgram = useCallback(async (text: string, apiKey: string, onend?: () => void) => {
     try {
       cancel()
       isSpeakingRef.current = true
 
-      // Default to Deepgram's natural male English voice 'aura-orion-en' for Alex
-      const model = import.meta.env.VITE_DEEPGRAM_TTS_MODEL || 'aura-orion-en'
+      // Default to Deepgram's brisk male English voice 'aura-arcas-en' or 'aura-zeus-en'
+      const model = import.meta.env.VITE_DEEPGRAM_TTS_MODEL || 'aura-arcas-en'
+      const speed = parseFloat(import.meta.env.VITE_DEEPGRAM_TTS_SPEED || '1.1') // 1.1x speed for fast professional pacing
+
+      const preparedText = prepareTextForTTS(text)
+
       const response = await fetch(`https://api.deepgram.com/v1/speak?model=${model}`, {
         method: 'POST',
         headers: {
           'Authorization': `Token ${apiKey}`,
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ text })
+        body: JSON.stringify({ text: preparedText })
       })
 
       if (!response.ok) {
@@ -124,6 +148,7 @@ export function useTTSEngine(): TTSEngine {
       const blob = await response.blob()
       const audioUrl = URL.createObjectURL(blob)
       const audio = new Audio(audioUrl)
+      audio.playbackRate = isNaN(speed) ? 1.1 : speed // Apply fast professional playback speed
       currentAudioRef.current = audio
 
       audio.onended = () => {

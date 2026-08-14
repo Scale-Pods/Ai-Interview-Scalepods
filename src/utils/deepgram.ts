@@ -8,11 +8,46 @@ export interface DeepgramSTTOptions {
   apiKey?: string
   model?: string
   language?: string
+  keywords?: string[]
   onTranscript?: (transcript: string, isFinal: boolean) => void
   onError?: (error: Error) => void
   onOpen?: () => void
   onClose?: () => void
 }
+
+const DEFAULT_TECH_KEYWORDS = [
+  'n8n:5',
+  'Zapier:3',
+  'Integromat:3',
+  'LangChain:3',
+  'LlamaIndex:3',
+  'FastAPI:3',
+  'GraphQL:3',
+  'tRPC:3',
+  'Supabase:3',
+  'PostgreSQL:3',
+  'MongoDB:3',
+  'Redis:3',
+  'Kafka:3',
+  'Docker:3',
+  'Kubernetes:3',
+  'React:3',
+  'Next.js:3',
+  'Vue.js:3',
+  'Nuxt.js:3',
+  'TypeScript:3',
+  'JavaScript:3',
+  'PyTorch:3',
+  'TensorFlow:3',
+  'scikit-learn:3',
+  'OpenAI:3',
+  'Claude:3',
+  'Vercel:3',
+  'Netlify:3',
+  'WebSockets:3',
+  'WebRTC:3',
+  'microservices:3'
+]
 
 export class DeepgramSTT {
   private socket: WebSocket | null = null
@@ -20,6 +55,7 @@ export class DeepgramSTT {
   private apiKey: string
   private model: string
   private language: string
+  private keywords: string[]
   private onTranscript?: (transcript: string, isFinal: boolean) => void
   private onError?: (error: Error) => void
   private onOpen?: () => void
@@ -32,6 +68,7 @@ export class DeepgramSTT {
     this.apiKey = options.apiKey || import.meta.env.VITE_DEEPGRAM_API_KEY || ''
     this.model = options.model || import.meta.env.VITE_DEEPGRAM_MODEL || 'nova-2'
     this.language = options.language || 'en-US'
+    this.keywords = options.keywords || DEFAULT_TECH_KEYWORDS
     this.onTranscript = options.onTranscript
     this.onError = options.onError
     this.onOpen = options.onOpen
@@ -66,6 +103,11 @@ export class DeepgramSTT {
       endpointing: '300',
       no_delay: 'true'
     })
+
+    // Add technical keyword boosting to Deepgram WebSocket query params
+    for (const kw of this.keywords) {
+      params.append('keywords', kw)
+    }
 
     const url = `wss://api.deepgram.com/v1/listen?${params.toString()}`
 

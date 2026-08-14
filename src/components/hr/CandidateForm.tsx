@@ -462,15 +462,6 @@ export function CandidateForm({ onSuccess }: CandidateFormProps) {
                       {GENERATION_STAGES[generationStep].detail}
                     </p>
                   </div>
-                  <div className="w-full max-w-xs h-1.5 rounded-full overflow-hidden mt-1" style={{ background: 'rgba(255,255,255,0.08)' }}>
-                    <div
-                      className="h-full rounded-full transition-all duration-700 ease-out"
-                      style={{
-                        width: `${((generationStep + 1) / GENERATION_STAGES.length) * 100}%`,
-                        background: 'linear-gradient(90deg, #3b82f6, #6366f1)'
-                      }}
-                    />
-                  </div>
                 </div>
               ) : (
                 <div className="space-y-3">
@@ -742,9 +733,6 @@ export function CandidateForm({ onSuccess }: CandidateFormProps) {
               <div className="space-y-1 text-center">
                 <p className="text-sm" style={{ color: 'var(--label-secondary)' }}>Creating interview session...</p>
                 <p className="text-xs" style={{ color: 'var(--label-tertiary)' }}>Preparing the invite. Questions are generated live in the interview.</p>
-              </div>
-              <div className="w-full rounded-full h-1.5 mt-2" style={{ background: 'var(--fill-quaternary)' }}>
-                <div className="h-full rounded-full animate-pulse" style={{ width: '60%', background: 'var(--blue)' }} />
               </div>
             </div>
           )}

@@ -23,6 +23,7 @@ const eventIcon = (type: string) => {
 }
 
 export function ProctoringDashboard() {
+  const [filterTab, setFilterTab] = useState<'live' | 'all' | 'flagged' | 'completed'>('all')
   const [activeSessions, setActiveSessions] = useState<InterviewSession[]>([])
   const [eventsMap, setEventsMap] = useState<Record<string, ProctoringEvent[]>>({})
   const [summaryMap, setSummaryMap] = useState<Record<string, ProctoringSummary>>({})
@@ -30,11 +31,21 @@ export function ProctoringDashboard() {
 
   useEffect(() => {
     const load = async () => {
+      const statuses = filterTab === 'live'
+        ? ['in_progress', 'flagged']
+        : filterTab === 'flagged'
+        ? ['flagged']
+        : filterTab === 'completed'
+        ? ['completed']
+        : ['in_progress', 'flagged', 'completed']
+
       const { data: sessions } = await supabase
         .from('interview_sessions_ai_interview')
         .select('*, candidates_ai_interview(name, email)')
-        .in('status', ['in_progress', 'flagged'])
+        .in('status', statuses)
         .order('created_at', { ascending: false })
+        .limit(50)
+
       if (sessions) {
         const unlinked = sessions.filter(s => !s.candidates_ai_interview)
         if (unlinked.length > 0) {
@@ -63,7 +74,7 @@ export function ProctoringDashboard() {
     load()
     const interval = setInterval(load, 10000)
     return () => clearInterval(interval)
-  }, [])
+  }, [filterTab])
 
   const loadEvents = async (sessionId: string) => {
     const { data } = await supabase
@@ -106,17 +117,42 @@ export function ProctoringDashboard() {
 
   return (
     <div className="p-6 space-y-6 animate-fade-in">
-      <div className="flex items-center gap-3 mb-2">
-        <Shield size={24} style={{ color: 'var(--blue)' }} />
-        <h1 className="text-2xl font-bold">Proctoring Dashboard</h1>
-        <span className="badge-live text-xs"></span>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-2">
+        <div className="flex items-center gap-3">
+          <Shield size={24} style={{ color: 'var(--blue)' }} />
+          <h1 className="text-2xl font-bold">Proctoring Dashboard</h1>
+        </div>
+
+        {/* Status Filter Tabs */}
+        <div className="flex items-center gap-1 p-1 rounded-xl shrink-0" style={{ background: 'var(--fill-quaternary)', border: '1px solid var(--separator)' }}>
+          {[
+            { id: 'all' as const, label: 'All Proctored' },
+            { id: 'live' as const, label: 'Live Active' },
+            { id: 'flagged' as const, label: 'Flagged' },
+            { id: 'completed' as const, label: 'Completed' },
+          ].map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => setFilterTab(tab.id)}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all duration-150 ${
+                filterTab === tab.id ? 'shadow-sm' : ''
+              }`}
+              style={{
+                background: filterTab === tab.id ? 'var(--blue)' : 'transparent',
+                color: filterTab === tab.id ? 'white' : 'var(--label-secondary)'
+              }}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {activeSessions.length > 0 && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <div className="card liquid-card-sm" style={{ padding: '16px' }}>
             <p className="text-2xl font-bold" style={{ color: 'var(--label-primary)', fontVariantNumeric: 'tabular-nums' }}>{activeSessions.length}</p>
-            <p className="text-xs" style={{ color: 'var(--label-secondary)' }}>Active Sessions</p>
+            <p className="text-xs" style={{ color: 'var(--label-secondary)' }}>Total Sessions</p>
           </div>
           <div className="card liquid-card-sm" style={{ padding: '16px' }}>
             <p className="text-2xl font-bold" style={{ color: 'var(--orange)', fontVariantNumeric: 'tabular-nums' }}>
@@ -140,9 +176,14 @@ export function ProctoringDashboard() {
       )}
 
       {activeSessions.length === 0 ? (
-        <div className="text-center py-16" style={{ color: 'var(--label-tertiary)' }}>
-          <Shield size={48} className="mx-auto mb-4 opacity-30" />
-          <p>No active interview sessions</p>
+        <div className="card p-12 text-center" style={{ color: 'var(--label-tertiary)' }}>
+          <Shield size={48} className="mx-auto mb-4 opacity-30" style={{ color: 'var(--blue)' }} />
+          <h3 className="text-base font-semibold mb-1" style={{ color: 'var(--label-primary)' }}>No sessions found</h3>
+          <p className="text-xs max-w-sm mx-auto" style={{ color: 'var(--label-secondary)' }}>
+            {filterTab === 'live'
+              ? 'There are currently no candidates taking an interview live. Switch to "All Proctored" or "Completed" tab to view past security logs.'
+              : 'No proctored sessions match your selected filter.'}
+          </p>
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-6">
