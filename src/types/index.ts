@@ -1,7 +1,7 @@
 export type InterviewerTurnType = 'question' | 'follow_up' | 'transition' | 'closing'
 
 export interface InterviewerTurn {
-  interviewer_text: string
+  interviewer_text?: string | null
   turn_type: InterviewerTurnType
   question_type?: 'technical' | 'behavioral' | 'situational' | 'cultural'
   should_continue: boolean
@@ -149,14 +149,20 @@ export interface LiveAssessmentNote {
   note: string;
   follow_up_prompted: boolean;
   follow_up_question?: string;
+  /** How to restate the parent primary question when clarification is needed. */
+  rephrased_question?: string;
   recommended_action?: AnswerAction;
   /** The specific failure mode that triggered follow_up_prompted, if any. */
   insufficiency_reason?: AnswerInsufficiencyReason | null;
   competency_evidence?: CompetencyEvidence[];
   confidence?: number;
+  /** Set when the LLM selected rephrase_primary for a primary technical question. */
+  requested_clarification?: boolean;
+  /** Set when the LLM selected rephrase_primary because an answer was off topic. */
+  answer_was_irrelevant?: boolean;
 }
 
-export type AnswerAction = 'advance' | 'follow_up' | 'revisit_later';
+export type AnswerAction = 'advance' | 'follow_up' | 'rephrase_primary';
 
 /**
  * Structured failure-mode taxonomy returned by analyzeAnswerInRealtime.

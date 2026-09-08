@@ -42,6 +42,7 @@ interface InterviewContextType {
 
 const InterviewContext = createContext<InterviewContextType | null>(null)
 const INTRO_QUESTION_TEXT = "Hello! I am your AI Interviewer today. Welcome to your interview. To start off, how are you doing today?"
+const OPENING_ACKNOWLEDGMENT = "Hello, and thank you for joining today. I'm Alex, and I'll be guiding the interview."
 
 function normalizeQuestionType(type?: string): 'technical' | 'behavioral' | 'situational' | 'cultural' {
   const t = String(type || '').toLowerCase().trim()
@@ -223,51 +224,10 @@ export function InterviewProvider({ children }: { children: React.ReactNode }) {
 
     if (!currentQuestion || !answerText || !resumeText) return
 
-    const isTechnicalQuestion = currentQuestion.question_type === 'technical'
+    const isAlreadyFollowUp = currentQuestion.source === 'llm_ts_followup'
 
-    // If it's not a technical question, we do not call the LLM for evaluation or follow-up
-    if (!isTechnicalQuestion) {
-      const note: LiveAssessmentNote = {
-        question_id: questionId,
-        authenticity_signal: 'genuine',
-        depth_signal: 'surface',
-        red_flags: [],
-        note: 'Non-technical question skipped realtime analysis.',
-        follow_up_prompted: false,
-        insufficiency_reason: null
-      }
-      lastAssessmentNoteRef.current = note
-      setLiveAssessmentNotes(prev => [...prev, note])
-      liveAssessmentNotesRef.current = [...liveAssessmentNotesRef.current, note]
-
-      const signal: AuthenticitySignal = {
-        question_id: questionId,
-        signal: 'genuine',
-        depth: 'surface',
-        follow_up_count: 0
-      }
-      authenticitySignalsRef.current = [...authenticitySignalsRef.current, signal]
-      setAuthenticitySignals(prev => [...prev, signal])
-
-      // Persist placeholder note to DB for scorecard consistency
-      ;(async () => {
-        try {
-          await supabasePublic
-            .from('interview_answers_ai_interview')
-            .update({ ai_live_note: note, ai_assessment: note })
-            .eq('session_id', session.id)
-            .eq('question_id', questionId)
-        } catch (persistErr) {
-          console.warn('[submitAnswer] Could not persist placeholder note:', persistErr)
-        }
-      })()
-
-      return
-    }
-
-    // ----- STEP 1: AWAIT the analysis (Technical questions only) -----
-    // We must have the note BEFORE generateNextTurn runs so the follow-up decision
-    // is based on the answer that was just submitted — not the previous one.
+    // ----- STEP 1: AWAIT the LLM analysis (all question types) -----
+    // n8n returns a strict action. This keeps follow-up eligibility in one place.
     lastAssessmentNoteRef.current = null
     setIsAnalyzingAnswer(true)
 
@@ -285,38 +245,42 @@ export function InterviewProvider({ children }: { children: React.ReactNode }) {
       const note = await analyzeAnswerInRealtime(
         currentQuestion.question_text, answerText, resumeText, jdText,
         historyMap, questionId, blueprint, currentQuestion.competency_ids || [],
-        currentQuestion.question_type
+        currentQuestion.question_type,
+        isAlreadyFollowUp
       )
 
-      // ----- STEP 2: If follow-up warranted on a technical question, generate the targeted question -----
-      // Hard enforcement: follow-ups are only for technical questions, max 1 per parent question.
-      // The insufficiency_reason from the analysis drives gap-specific question generation.
-      const isAlreadyFollowUp = currentQuestion.source === 'llm_ts_followup'
-
-      if (
-        note.follow_up_prompted &&
-        note.insufficiency_reason &&
-        !isAlreadyFollowUp   // follow-up questions must not generate more follow-ups
-      ) {
+      if (note.recommended_action === 'follow_up' && note.insufficiency_reason) {
         try {
           const targetedQuestion = await generateTargetedFollowUp(
             currentQuestion.question_text,
             answerText,
             note.insufficiency_reason,
-            note.follow_up_question || '',  // gap direction from analysis
+            note.follow_up_question || '',
             resumeText,
             jdText
           )
-          // Overwrite follow_up_question with the specific, gap-targeted text
           note.follow_up_question = targetedQuestion
         } catch (followUpErr) {
           console.warn('[submitAnswer] generateTargetedFollowUp failed, keeping gap direction:', followUpErr)
-          // Keep the gap direction from the analysis as a fallback question
+        }
+      } else if (note.recommended_action === 'rephrase_primary') {
+        try {
+          note.rephrased_question = await generateTargetedFollowUp(
+            currentQuestion.question_text,
+            answerText,
+            'irrelevant',
+            note.rephrased_question || 'Restate the original question in simpler, concrete language.',
+            resumeText,
+            jdText,
+            'rephrase_primary'
+          )
+        } catch (rephraseErr) {
+          console.warn('[submitAnswer] Could not rephrase primary question:', rephraseErr)
         }
       } else {
-        // Clear any follow-up intent if conditions aren't met (non-technical or already a follow-up)
         note.follow_up_prompted = false
         note.follow_up_question = undefined
+        note.rephrased_question = undefined
         note.insufficiency_reason = null
       }
 
@@ -493,59 +457,28 @@ export function InterviewProvider({ children }: { children: React.ReactNode }) {
       const followUpCount = getFollowUpCount(latestQuestions, lastNote)
       const nextPlanItem = selectNextPlanItem(activeBlueprint, latestQuestions, liveAssessmentNotesRef.current)
 
-      // Compute constraints for follow-up.
-      // Follow-ups are only allowed for technical questions, max 1 follow-up per parent technical question.
-      const isTechnicalQuestion = lastQuestion?.question_type === 'technical'
+      // Compute enriched context for the LLM turn generator
+      const lastAnswerWordCount            = lastAnswerText.trim().split(/\s+/).filter(Boolean).length
+      const isTechnicalQuestion            = lastQuestion?.question_type === 'technical'
+
+      // A primary technical question may create one adaptive turn: a targeted
+      // follow-up or a simpler rephrasing. Follow-ups and non-technical questions always advance.
       const maxFollowUps = (isTechnicalQuestion && !lastAnswerWasFollowUp) ? 1 : 0
       const allowPolicyFollowUp = shouldAskFollowUp(lastNote, followUpCount, maxFollowUps)
+      const needsPrimaryRephrase = Boolean(
+        (lastNote?.recommended_action === 'rephrase_primary' || lastNote?.requested_clarification) &&
+        !lastAnswerWasFollowUp &&
+        isTechnicalQuestion
+      )
+      const needsAdaptiveQuestion = allowPolicyFollowUp || needsPrimaryRephrase
 
-      // Closing check: ONLY trigger closing if no follow-up is pending AND max primary questions reached
-      if (!allowPolicyFollowUp && jobQuestionsAsked >= maxPrimaryQuestions && !nextPendingQuestion) {
+      if (!needsAdaptiveQuestion && jobQuestionsAsked >= maxPrimaryQuestions && !nextPendingQuestion) {
         setCurrentTurn({
           interviewer_text: "That brings us to the end of the interview. Thank you so much for your time and for sharing your experience. Your responses have been successfully recorded. It is now safe to exit the interview and close this tab.",
           question_text: '',
           turn_type: 'closing',
           question_type: 'cultural',
           should_continue: false
-        })
-        return
-      }
-
-      // If a pre-generated question is waiting AND no follow-up is required,
-      // generate a natural conversational acknowledgment via LLM but do NOT
-      // touch the DB (candidates have no UPDATE RLS policy on questions).
-      if (!allowPolicyFollowUp && nextPendingQuestion) {
-        setQuestions(latestQuestions)
-        const pendingIdx = latestQuestions.findIndex(q => q.id === nextPendingQuestion.id)
-        setCurrentQuestionIndex(pendingIdx)
-        lastTurnQuestionIdRef.current = nextPendingQuestion.id
-        setCurrentQuestionId(nextPendingQuestion.id)
-
-        // When moving to the next question with no follow-up required, use a clean, natural,
-        // concise recruiter transition so the system does not repeat or re-hash previous acknowledgments.
-        const transitions = nextPendingQuestion.question_type === 'technical'
-          ? [
-              "Got it, thank you. Moving to the next technical topic.",
-              "Thanks for sharing those details. Next up,",
-              "That makes sense, thank you. Let's move to the next question.",
-              "Appreciate those details. Moving forward,",
-              "Got it, thank you."
-            ]
-          : [
-              "Got it, thank you.",
-              "Thanks for sharing that.",
-              "That makes sense, thank you.",
-              "Appreciate you sharing that.",
-              "Thank you."
-            ]
-
-        const ackText = transitions[nextPendingQuestion.order_index % transitions.length]
-        setCurrentTurn({
-          interviewer_text: `${ackText} ${nextPendingQuestion.question_text}`,
-          question_text: nextPendingQuestion.question_text,
-          turn_type: 'question',
-          question_type: nextPendingQuestion.question_type,
-          should_continue: true
         })
         return
       }
@@ -570,12 +503,25 @@ export function InterviewProvider({ children }: { children: React.ReactNode }) {
         allowPolicyFollowUp,
         nextPlanItem,
         maxPrimaryQuestions,
-        maxFollowUps
+        maxFollowUps,
+        needsPrimaryRephrase
+          ? (lastNote?.rephrased_question || `Could you clarify or simplify the question: "${lastQuestion?.question_text}"?`)
+          : allowPolicyFollowUp
+            ? lastNote?.follow_up_question
+            : nextPendingQuestion?.question_text,
+        Boolean(needsPrimaryRephrase || lastNote?.requested_clarification || lastNote?.recommended_action === 'rephrase_primary'),
+        lastAnswerWordCount,
+        isTechnicalQuestion,
+        false
       )
+
+      if (needsPrimaryRephrase && turn) {
+        turn.turn_type = 'follow_up'
+      }
 
       // If this turn includes a question, store it in the DB
       if ((turn.turn_type === 'question' || turn.turn_type === 'follow_up') && turn.question_text) {
-        const isFollowUp = turn.turn_type === 'follow_up'
+        const isFollowUp = turn.turn_type === 'follow_up' || needsPrimaryRephrase
 
         if (isFollowUp) {
           const insertionIndex = lastQuestion ? lastQuestion.order_index + 1 : latestQuestions.length
@@ -601,7 +547,7 @@ export function InterviewProvider({ children }: { children: React.ReactNode }) {
               parent_question_id: lastNote?.question_id || null,
               plan_item_id: lastQuestion?.plan_item_id || null,
               competency_ids: lastQuestion?.competency_ids || [],
-              decision_rationale: lastNote?.note || 'Targeted evidence follow-up.',
+              decision_rationale: lastNote?.note || (needsPrimaryRephrase ? 'Primary question rephrased after clarification request.' : 'Targeted evidence follow-up.'),
               // Record WHY this follow-up was triggered for scoring and audit
               insufficiency_reason: lastNote?.insufficiency_reason || null
             })
@@ -614,6 +560,11 @@ export function InterviewProvider({ children }: { children: React.ReactNode }) {
           lastTurnQuestionIdRef.current = insertedQuestion.id
           setCurrentQuestionId(insertedQuestion.id)
           setCurrentQuestionIndex(questionsData.findIndex(question => question.id === insertedQuestion.id))
+        } else if (nextPendingQuestion) {
+          setQuestions(latestQuestions)
+          lastTurnQuestionIdRef.current = nextPendingQuestion.id
+          setCurrentQuestionId(nextPendingQuestion.id)
+          setCurrentQuestionIndex(latestQuestions.findIndex(question => question.id === nextPendingQuestion.id))
         } else {
           // Dynamic new question — append at the end
           const safeType = normalizeQuestionType(turn.question_type)
@@ -642,8 +593,8 @@ export function InterviewProvider({ children }: { children: React.ReactNode }) {
         }
       }
 
-      // Track follow-up count if this turn is a follow-up
-      if (turn.turn_type === 'follow_up' && lastNote) {
+      // Track the one permitted adaptive turn for this primary question.
+      if ((turn.turn_type === 'follow_up' || needsPrimaryRephrase) && lastNote) {
         const trackingKey = lastQuestion?.parent_question_id || lastNote.question_id
         followUpCountRef.current[trackingKey] = followUpCount + 1
       }
@@ -715,9 +666,12 @@ export function InterviewProvider({ children }: { children: React.ReactNode }) {
       if (introQuestion) {
         lastTurnQuestionIdRef.current = introQuestion.id
         setCurrentQuestionId(introQuestion.id)
+        const greetingQuestionText = (introQuestion.question_text.toLowerCase().includes('hello') || introQuestion.question_text.toLowerCase().includes('welcome'))
+          ? introQuestion.question_text
+          : `${OPENING_ACKNOWLEDGMENT} ${introQuestion.question_text}`
         setCurrentTurn({
-          interviewer_text: introQuestion.question_text,
-          question_text: introQuestion.question_text,
+          interviewer_text: '',
+          question_text: greetingQuestionText,
           turn_type: 'question',
           question_type: introQuestion.question_type,
           should_continue: true
@@ -737,7 +691,7 @@ export function InterviewProvider({ children }: { children: React.ReactNode }) {
             lastTurnQuestionIdRef.current = pendingQuestion.id
             setCurrentQuestionId(pendingQuestion.id)
             setCurrentTurn({
-              interviewer_text: pendingQuestion.question_text,
+              interviewer_text: '',
               question_text: pendingQuestion.question_text,
               turn_type: 'question',
               question_type: pendingQuestion.question_type,
@@ -752,9 +706,12 @@ export function InterviewProvider({ children }: { children: React.ReactNode }) {
         const firstQ = latestQuestions[0]
         lastTurnQuestionIdRef.current = firstQ.id
         setCurrentQuestionId(firstQ.id)
+        const greetingQuestionText = (firstQ.question_text.toLowerCase().includes('hello') || firstQ.question_text.toLowerCase().includes('welcome'))
+          ? firstQ.question_text
+          : `${OPENING_ACKNOWLEDGMENT} ${firstQ.question_text}`
         setCurrentTurn({
-          interviewer_text: firstQ.question_text,
-          question_text: firstQ.question_text,
+          interviewer_text: '',
+          question_text: greetingQuestionText,
           turn_type: 'question',
           question_type: firstQ.question_type,
           should_continue: true

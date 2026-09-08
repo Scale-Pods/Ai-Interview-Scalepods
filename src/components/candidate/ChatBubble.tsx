@@ -82,7 +82,8 @@ export function TypingBubble() {
 export function ChatBubble({ message }: { message: ChatMessage }) {
   if (message.role === 'alex') {
     const isSpeaking = message.status === 'speaking'
-    const typeConf = message.questionType ? TYPE_CONFIG[message.questionType] : null
+    const isAcknowledgement = message.phase === 'acknowledgment'
+    const typeConf = (!isAcknowledgement && message.questionType) ? TYPE_CONFIG[message.questionType] : null
     const TypeIcon = typeConf?.icon
 
     return (
@@ -93,10 +94,10 @@ export function ChatBubble({ message }: { message: ChatMessage }) {
           {/* Meta row */}
           <div className="bubble-meta">
             <span className="bubble-label-alex">Alex</span>
-            {message.phase === 'acknowledgment' && (
+            {isAcknowledgement && (
               <span style={{ color: 'var(--label-tertiary)', fontWeight: 400 }}>· acknowledging</span>
             )}
-            {typeConf && (
+            {typeConf && !isAcknowledgement && (
               <span
                 className="bubble-type-badge"
                 style={{ background: typeConf.bg, color: typeConf.color }}
@@ -105,7 +106,7 @@ export function ChatBubble({ message }: { message: ChatMessage }) {
                 {typeConf.label}
               </span>
             )}
-            {message.isFollowUp && (
+            {message.isFollowUp && !isAcknowledgement && (
               <span
                 className="bubble-type-badge"
                 style={{ background: 'rgba(191,90,242,0.15)', color: 'var(--purple)' }}
@@ -115,30 +116,59 @@ export function ChatBubble({ message }: { message: ChatMessage }) {
             )}
           </div>
 
-          {/* Bubble body */}
-          <div className="bubble-body" style={{
-            borderLeft: isSpeaking ? '2px solid var(--purple)' : '2px solid transparent',
-            transition: 'border-color 0.3s ease'
-          }}>
-            {isSpeaking && (
-              <div style={{
-                fontSize: '0.65rem',
-                fontWeight: 600,
-                color: 'var(--purple)',
-                textTransform: 'uppercase',
-                letterSpacing: '0.04em',
-                marginBottom: '0.375rem',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '0.35rem'
-              }}>
-                <span className="w-1.5 h-1.5 rounded-full animate-pulse inline-block" style={{ background: 'var(--purple)' }} />
-                Reading aloud
-                <SpeakingBars />
-              </div>
-            )}
-            <p style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{message.text}</p>
-          </div>
+          {/* Bubble body — acknowledgement gets a muted italic style */}
+          {isAcknowledgement ? (
+            <div
+              className="bubble-body bubble-acknowledgement"
+              style={{
+                borderLeft: isSpeaking ? '2px solid var(--orange)' : '2px solid rgba(255,159,10,0.35)',
+                transition: 'border-color 0.3s ease'
+              }}
+            >
+              {isSpeaking && (
+                <div style={{
+                  fontSize: '0.65rem',
+                  fontWeight: 600,
+                  color: 'var(--orange)',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.04em',
+                  marginBottom: '0.375rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.35rem'
+                }}>
+                  <span className="w-1.5 h-1.5 rounded-full animate-pulse inline-block" style={{ background: 'var(--orange)' }} />
+                  Speaking now
+                  <SpeakingBars />
+                </div>
+              )}
+              <p style={{ margin: 0, whiteSpace: 'pre-wrap', fontStyle: 'italic' }}>{message.text}</p>
+            </div>
+          ) : (
+            <div className="bubble-body" style={{
+              borderLeft: isSpeaking ? '2px solid var(--purple)' : '2px solid transparent',
+              transition: 'border-color 0.3s ease'
+            }}>
+              {isSpeaking && (
+                <div style={{
+                  fontSize: '0.65rem',
+                  fontWeight: 600,
+                  color: 'var(--purple)',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.04em',
+                  marginBottom: '0.375rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.35rem'
+                }}>
+                  <span className="w-1.5 h-1.5 rounded-full animate-pulse inline-block" style={{ background: 'var(--purple)' }} />
+                  Reading aloud
+                  <SpeakingBars />
+                </div>
+              )}
+              <p style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{message.text}</p>
+            </div>
+          )}
         </div>
       </div>
     )

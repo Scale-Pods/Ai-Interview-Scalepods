@@ -472,6 +472,34 @@ export function getDynamicCandidateQuestion(
 
 
 // All LLM calls are routed through n8n webhooks.
+export function isClarificationRequested(answer: string): boolean {
+  const text = (answer || '').toLowerCase().trim()
+  if (!text) return false
+  const keywords = [
+    'clarify', 'clarification', 'explain', 'explanation',
+    'understand', 'rephrase', 'what do you mean', 'what does that mean',
+    'what is meant', 'repeat', 'meaning of', 'pardon',
+    'elaborate on the question', 'elaborate'
+  ]
+  return keywords.some(k => text.includes(k))
+}
+
+export function isVagueOrUncertainAnswer(answer: string): boolean {
+  const text = (answer || '').toLowerCase().trim()
+  if (!text) return true
+  const words = text.split(/\s+/).filter(Boolean)
+  if (words.length < 5) return true
+
+  const vaguePhrases = [
+    "don't know", "do not know", "no idea", "not sure", "idk",
+    "didn't see", "did not see", "no problems", "never used",
+    "haven't used", "have not used", "cannot say", "can't say",
+    "not experienced", "no experience", "dunno", "nothing specific",
+    "no idea about", "face any problems", "dont know"
+  ]
+  return vaguePhrases.some(phrase => text.includes(phrase))
+}
+
 // Direct browser-to-LLM API calls have been removed — API keys live in n8n only.
 
 // -------------------------------------------------------------------
@@ -488,29 +516,36 @@ export async function analyzeAnswerInRealtime(
   questionId: string,
   blueprint?: InterviewBlueprint | null,
   competencyIds: string[] = [],
-  questionType: string = 'technical'
+  questionType: string = 'technical',
+  isAlreadyFollowUp = false
 ): Promise<LiveAssessmentNote> {
+  const isTechnical = questionType === 'technical'
+  const isExplicitClarification = isClarificationRequested(answer)
+  const isVague = isVagueOrUncertainAnswer(answer)
+  const canAdaptPrimary = isTechnical && !isAlreadyFollowUp
+
+  const fallbackAction = (
+    isExplicitClarification && canAdaptPrimary
+      ? 'rephrase_primary'
+      : isVague && canAdaptPrimary
+        ? 'follow_up'
+        : 'advance'
+  )
+
   const fallback: LiveAssessmentNote = {
     question_id: questionId,
     authenticity_signal: 'genuine',
-    depth_signal: 'surface',
+    depth_signal: isVague ? 'empty' : 'surface',
     red_flags: [],
-    note: 'Analysis unavailable.',
-    follow_up_prompted: false,
-    insufficiency_reason: null
+    note: isExplicitClarification ? 'Candidate requested clarification.' : isVague ? 'Candidate gave a vague or uncertain answer.' : 'Analysis unavailable.',
+    follow_up_prompted: fallbackAction === 'rephrase_primary' || fallbackAction === 'follow_up',
+    rephrased_question: fallbackAction === 'rephrase_primary' ? `Could you clarify or simplify the question: "${question}"?` : undefined,
+    follow_up_question: fallbackAction === 'follow_up' ? `Could you share any related experience or fundamental concepts you do know regarding "${question}"?` : undefined,
+    insufficiency_reason: fallbackAction === 'follow_up' ? 'vague' : null,
+    recommended_action: fallbackAction,
+    requested_clarification: isExplicitClarification
   }
 
-  if (!answer || answer.trim().length < 10) {
-    return {
-      ...fallback,
-      authenticity_signal: 'vague',
-      depth_signal: 'empty',
-      note: 'Candidate gave a very short or empty answer.',
-      red_flags: ['Answer too short to evaluate']
-    }
-  }
-
-  const isTechnical = questionType === 'technical'
   const webhookUrl = import.meta.env.VITE_WEBHOOK_INTERVIEW_ENGINE || '/webhook/interview-engine'
 
   try {
@@ -527,7 +562,8 @@ export async function analyzeAnswerInRealtime(
         questionId,
         blueprint,
         competencyIds,
-        questionType
+        questionType,
+        isAlreadyFollowUp
       })
     })
 
@@ -540,13 +576,18 @@ export async function analyzeAnswerInRealtime(
     const insufficiencyReason: AnswerInsufficiencyReason | null =
       isTechnical && PRIORITY.includes(rawReason as AnswerInsufficiencyReason)
         ? (rawReason as AnswerInsufficiencyReason)
-        : null
+        : isVague ? 'vague' : null
 
     const rawAction = parsed.recommended_action
-    const followUpIntended = rawAction === 'follow_up' && isTechnical && insufficiencyReason !== null
-    const recommendedAction = followUpIntended ? 'follow_up' : (
-      ['advance', 'revisit_later'].includes(rawAction) ? rawAction : 'advance'
+    const recommendedAction = (
+      (rawAction === 'rephrase_primary' || isExplicitClarification || Boolean(parsed.requested_clarification)) && canAdaptPrimary
+        ? 'rephrase_primary'
+        : (rawAction === 'follow_up' || isVague || insufficiencyReason) && canAdaptPrimary
+          ? 'follow_up'
+          : 'advance'
     ) as LiveAssessmentNote['recommended_action']
+    const followUpIntended = recommendedAction === 'follow_up'
+    const rephraseIntended = recommendedAction === 'rephrase_primary'
 
     return {
       question_id: questionId,
@@ -554,10 +595,13 @@ export async function analyzeAnswerInRealtime(
       depth_signal: parsed.depth_signal || 'surface',
       red_flags: Array.isArray(parsed.red_flags) ? parsed.red_flags : [],
       note: parsed.note || '',
-      follow_up_prompted: followUpIntended,
+      follow_up_prompted: followUpIntended || rephraseIntended,
       follow_up_question: followUpIntended ? (parsed.follow_up_direction || undefined) : undefined,
+      rephrased_question: rephraseIntended ? (parsed.rephrase_direction || undefined) : undefined,
       insufficiency_reason: followUpIntended ? insufficiencyReason : null,
       recommended_action: recommendedAction,
+      requested_clarification: isExplicitClarification || (rephraseIntended && !parsed.answer_was_irrelevant),
+      answer_was_irrelevant: rephraseIntended && Boolean(parsed.answer_was_irrelevant),
       confidence: Math.max(0, Math.min(100, Number(parsed.confidence) || 0)),
       competency_evidence: Array.isArray(parsed.competency_evidence) ? parsed.competency_evidence : []
     }
@@ -579,7 +623,8 @@ export async function generateTargetedFollowUp(
   insufficiencyReason: AnswerInsufficiencyReason,
   gapDirection: string,  // the follow_up_direction from analyzeAnswerInRealtime
   resumeText: string,
-  jdText: string
+  jdText: string,
+  mode: 'follow_up' | 'rephrase_primary' = 'follow_up'
 ): Promise<string> {
   const webhookUrl = import.meta.env.VITE_WEBHOOK_INTERVIEW_ENGINE || '/webhook/interview-engine'
   try {
@@ -593,7 +638,8 @@ export async function generateTargetedFollowUp(
         insufficiencyReason,
         gapDirection,
         resumeText,
-        jdText
+        jdText,
+        mode
       })
     })
 
@@ -741,7 +787,11 @@ export async function generateInterviewerTurn(
   planItem?: InterviewPlanItem | null,
   maxPrimaryQuestions = TOTAL_WANTED_JOB_QUESTIONS,
   maxFollowUps = 1,
-  targetQuestion?: string
+  targetQuestion?: string,
+  candidateRequestedClarification?: boolean,
+  lastAnswerWordCount?: number,
+  questionIsTechnical?: boolean,
+  candidateAnswerWasIrrelevant?: boolean
 ): Promise<InterviewerTurn> {
   if (totalQuestions >= maxPrimaryQuestions && pendingQuestions.length === 0 && !targetQuestion) {
     return {
@@ -806,7 +856,11 @@ export async function generateInterviewerTurn(
         planItem,
         maxPrimaryQuestions,
         maxFollowUps,
-        targetQuestion
+        targetQuestion,
+        candidateRequestedClarification: candidateRequestedClarification ?? false,
+        lastAnswerWordCount: lastAnswerWordCount ?? 0,
+        questionIsTechnical: questionIsTechnical !== false,
+        candidateAnswerWasIrrelevant: candidateAnswerWasIrrelevant ?? false
       })
     })
 
@@ -833,7 +887,7 @@ export async function generateInterviewerTurn(
     }
 
     return {
-      interviewer_text: parsed.interviewer_text || questionText,
+      interviewer_text: parsed.interviewer_text || (candidateRequestedClarification ? "No problem at all! Let's move forward." : ''),
       question_text: targetQuestion || questionText,
       turn_type: parsed.turn_type || 'question',
       question_type: parsed.question_type || interviewStage.questionType,
@@ -843,7 +897,7 @@ export async function generateInterviewerTurn(
     console.error('[generateInterviewerTurn] n8n call failed, using dynamic candidate question:', err)
     if (targetQuestion) {
       return {
-        interviewer_text: targetQuestion,
+        interviewer_text: candidateRequestedClarification ? "No problem at all! Let's move forward." : '',
         question_text: targetQuestion,
         turn_type: 'question' as InterviewerTurnType,
         question_type: interviewStage.questionType,

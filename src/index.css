@@ -704,8 +704,7 @@
 .chat-feed {
   flex: 1;
   overflow-y: auto;
-  padding: 1.5rem 1.25rem;
-  padding-bottom: 6rem;
+  padding: 1.5rem 1.25rem 1rem;
   scroll-behavior: smooth;
   display: flex;
   flex-direction: column;
@@ -850,12 +849,9 @@
 
 /* ─── Chat input bar ──────────────────────────────────────────────────── */
 .chat-input-bar {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
+  flex-shrink: 0;
   padding: 0.75rem 1rem;
-  background: rgba(28, 28, 30, 0.88);
+  background: rgba(28, 28, 30, 0.92);
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
   border-top: 1px solid rgba(255,255,255,0.07);
@@ -903,8 +899,14 @@
   .interview-sidebar {
     display: none;
   }
-  .chat-feed {
-    padding-bottom: 7rem;
-  }
 }
 
+/* ─── Acknowledgement bubble style ───────────────────────────────────────── */
+.bubble-acknowledgement {
+  opacity: 0.72;
+  font-size: 0.875rem !important;
+  background: rgba(255, 159, 10, 0.06) !important;
+  border-color: rgba(255, 159, 10, 0.25) !important;
+}
+
+.bubble-speaking-bar:nth-child(1) { background: inherit; }

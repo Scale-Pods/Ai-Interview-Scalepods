@@ -12,7 +12,6 @@ import { AnswerRecorder } from './AnswerRecorder'
 import type { AnswerRecorderState } from './AnswerRecorder'
 import { Completion } from './Completion'
 import { PreCheck } from './PreCheck'
-import { extractLeadIn } from './QuestionDisplay'
 import { VideoFeed } from './VideoFeed'
 import { ProctoringOverlay } from './ProctoringOverlay'
 import { RecruiterPersona } from './RecruiterPersona'
@@ -82,6 +81,8 @@ export function InterviewRoom() {
   const stopAndSubmitRef = useRef<(() => void) | null>(null)
   // Track the ID of the current Alex bubble so we can update its status
   const currentAlexBubbleIdRef = useRef<string | null>(null)
+  // Track the acknowledgement bubble ID separately so we can mark it done
+  const currentAckBubbleIdRef = useRef<string | null>(null)
 
   const TURN_GEN_MESSAGES = [
     { text: 'Reviewing your answer details...', detail: 'Processing key points & practical evidence' },
@@ -192,25 +193,30 @@ export function InterviewRoom() {
     }
   }
 
-  // Speak the interviewer's current turn when it changes.
-  // We split into two sequential utterances:
-  //   1. Acknowledgment / lead-in (if present)
-  //   2. The question itself
-  // This guarantees the question is always spoken even if the acknowledgment
-  // causes the browser TTS engine to silently drop the tail of a long string.
+  // Acknowledgements and questions arrive as separate fields, so TTS can speak
+  // them in sequence without attempting to infer a boundary from punctuation.
   useEffect(() => {
     if (currentTurn && avStream && !completionStartedRef.current) {
-      const fullText = currentTurn.interviewer_text
-      const questionText = currentTurn.question_text || fullText
-      const acknowledgment = extractLeadIn(fullText, questionText)
+      const acknowledgment = (currentTurn.interviewer_text || '').trim()
+      const questionText = currentTurn.question_text?.trim() || ''
 
-      const turnId = `${currentTurn.turn_type}-${fullText.slice(0, 40)}-${Date.now()}`
+      const turnId = `${currentTurn.turn_type}-${acknowledgment.slice(0, 40)}-${Date.now()}`
       turnIdRef.current = turnId
       isAiSpeakingRef.current = true
       setIsAiSpeaking(true)
 
       const speakQuestion = () => {
         if (turnIdRef.current !== turnId) return
+        // Mark the acknowledgement bubble as done before reading the question
+        const ackId = currentAckBubbleIdRef.current
+        if (ackId) {
+          setChatMessages(prev => prev.map(m => m.id === ackId ? { ...m, status: 'done' } : m))
+          currentAckBubbleIdRef.current = null
+        }
+        if (!questionText) {
+          onSpeakCompleteRef.current?.()
+          return
+        }
         setSpeakingPhase('question')
         setCurrentlySpeakingText(questionText)
         speak(questionText, () => {
@@ -231,7 +237,7 @@ export function InterviewRoom() {
             setTimeout(speakQuestion, 400)
           }
         })
-      } else {
+      } else if (questionText) {
         // No acknowledgment — go straight to question
         speakQuestion()
       }
@@ -243,24 +249,46 @@ export function InterviewRoom() {
   }, [currentTurn, avStream, cancel, speak])
 
   // ── Build chat message history ─────────────────────────────────────────
-  // When a new turn arrives, push an Alex bubble; when TTS ends, mark it done.
+  // The API contract keeps acknowledgement and question text separate.
   useEffect(() => {
     if (!currentTurn || !avStream) return
-    const questionText = currentTurn.question_text || currentTurn.interviewer_text
-    const bubbleId = `alex-${currentTurn.turn_type}-${Date.now()}`
-    currentAlexBubbleIdRef.current = bubbleId
+    const acknowledgmentText = (currentTurn.interviewer_text || '').trim()
+    const questionText = currentTurn.question_text?.trim() || ''
 
-    const newMsg: ChatMessage = {
-      id: bubbleId,
-      role: 'alex',
-      text: questionText,
-      phase: currentTurn.turn_type === 'closing' ? 'closing' : 'question',
-      questionType: (currentTurn.question_type as ChatMessage['questionType']) || 'technical',
-      isFollowUp: currentTurn.turn_type === 'follow_up',
-      status: 'speaking',
-      timestamp: Date.now(),
+    const now = Date.now()
+    const ackBubbleId = acknowledgmentText ? `alex-ack-${now}` : null
+    const bubbleId = `alex-${currentTurn.turn_type}-${now}`
+    currentAlexBubbleIdRef.current = bubbleId
+    currentAckBubbleIdRef.current = ackBubbleId
+
+    const newMessages: ChatMessage[] = []
+
+    // Push acknowledgement bubble first (if present)
+    if (acknowledgmentText && ackBubbleId) {
+      newMessages.push({
+        id: ackBubbleId,
+        role: 'alex',
+        text: acknowledgmentText,
+        phase: 'acknowledgment',
+        status: 'speaking',
+        timestamp: now,
+      })
     }
-    setChatMessages(prev => [...prev, newMsg])
+
+    if (questionText) {
+      newMessages.push({
+        id: bubbleId,
+        role: 'alex',
+        text: questionText,
+        phase: currentTurn.turn_type === 'closing' ? 'closing' : 'question',
+        questionType: (currentTurn.question_type as ChatMessage['questionType']) || 'technical',
+        isFollowUp: currentTurn.turn_type === 'follow_up',
+        status: 'speaking',
+        timestamp: now + 1,
+      })
+    }
+
+    setChatMessages(prev => [...prev, ...newMessages])
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentTurn?.interviewer_text, avStream])
 
@@ -623,6 +651,7 @@ export function InterviewRoom() {
                 expired={globalTimer.isExpired}
                 endEarly={endEarly}
                 audioStream={audioStream}
+                stopAndSubmitRef={stopAndSubmitRef}
               />
             </div>
           )}

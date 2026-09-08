@@ -30,9 +30,10 @@ interface AnswerRecorderProps {
   expired?: boolean
   endEarly?: boolean
   audioStream?: MediaStream | null
+  stopAndSubmitRef?: React.MutableRefObject<(() => void) | null>
 }
 
-export function AnswerRecorder({ onAnswerComplete, onStateChange, externalCanvasRef, isAiSpeaking, expired, endEarly, audioStream }: AnswerRecorderProps) {
+export function AnswerRecorder({ onAnswerComplete, onStateChange, externalCanvasRef, isAiSpeaking, expired, endEarly, audioStream, stopAndSubmitRef }: AnswerRecorderProps) {
   const [duration, setDuration] = useState(0)
   const [transcript, setTranscript] = useState('')
   const [silenceCountdown, setSilenceCountdown] = useState(COUNTDOWN_TENTHS)
@@ -159,24 +160,45 @@ export function AnswerRecorder({ onAnswerComplete, onStateChange, externalCanvas
   }, [])
 
   const stopAndSubmit = useCallback(() => {
-    if (!isRecordingRef.current) return
+    if (submittedRef.current) return
     shouldSubmitRef.current = true
 
     clearThinkingTimer()
     clearCountdown()
     isRecordingRef.current = false
 
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop()
+    if (!transcriptRef.current.trim()) {
+      transcriptRef.current = 'Candidate submitted response.'
+      setTranscript(transcriptRef.current)
     }
-    mediaRecorderRef.current = null
+
+    const activeRecorder = mediaRecorderRef.current
+    if (activeRecorder && activeRecorder.state !== 'inactive') {
+      mediaRecorderRef.current = null
+      activeRecorder.stop()
+    } else {
+      mediaRecorderRef.current = null
+      shouldSubmitRef.current = false
+      doSubmit(transcriptRef.current, audioBlobRef.current || undefined)
+    }
 
     stopSTTEngines()
 
     if (intervalRef.current) clearInterval(intervalRef.current)
     clearAudioActivityMonitor()
     cancelAnimationFrame(rafRef.current)
-  }, [clearAudioActivityMonitor, clearCountdown, clearThinkingTimer, stopSTTEngines])
+  }, [clearAudioActivityMonitor, clearCountdown, clearThinkingTimer, doSubmit, stopSTTEngines])
+
+  useEffect(() => {
+    if (stopAndSubmitRef) {
+      stopAndSubmitRef.current = stopAndSubmit
+    }
+    return () => {
+      if (stopAndSubmitRef) {
+        stopAndSubmitRef.current = null
+      }
+    }
+  }, [stopAndSubmitRef, stopAndSubmit])
 
   const stopRecordingSilently = useCallback(() => {
     shouldSubmitRef.current = false

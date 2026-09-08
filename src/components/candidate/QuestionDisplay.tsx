@@ -19,41 +19,6 @@ const TYPE_CONFIG = {
   cultural: { icon: MessageSquare, label: 'Cultural Fit', color: 'var(--orange)', bg: 'color-mix(in srgb, var(--orange) 10%, transparent)', border: 'color-mix(in srgb, var(--orange) 20%, transparent)' },
 }
 
-export function extractLeadIn(fullUtterance?: string, questionText?: string): string | undefined {
-  if (!fullUtterance || !questionText) return undefined
-  const full = fullUtterance.trim()
-  const qText = questionText.trim()
-
-  if (!full || !qText || full === qText) return undefined
-
-  // 1. Exact substring match: question starts at index > 0
-  const idx = full.indexOf(qText)
-  if (idx > 0) {
-    const lead = full.slice(0, idx).trim()
-    return lead || undefined
-  }
-
-  // 2. Case-insensitive substring match
-  const lowerFull = full.toLowerCase()
-  const lowerQ = qText.toLowerCase()
-  const lowerIdx = lowerFull.indexOf(lowerQ)
-  if (lowerIdx > 0) {
-    const lead = full.slice(0, lowerIdx).trim()
-    return lead || undefined
-  }
-
-  // 3. Sentence boundary extraction: if full utterance has multiple sentences and ends with/resembles question
-  const sentenceMatches = full.match(/[^.!?]+[.!?]+/g)
-  if (sentenceMatches && sentenceMatches.length > 1) {
-    const leadSentences = sentenceMatches.slice(0, -1).join(' ').trim()
-    if (leadSentences && leadSentences !== full && leadSentences !== qText) {
-      return leadSentences
-    }
-  }
-
-  return undefined
-}
-
 export function QuestionDisplay({ question, questionNumber, totalQuestions, isAiSpeaking, speakingPhase }: QuestionDisplayProps) {
   if (!question) {
     return (
@@ -114,4 +79,3 @@ export function QuestionDisplay({ question, questionNumber, totalQuestions, isAi
     </div>
   )
 }
-

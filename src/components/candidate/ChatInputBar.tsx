@@ -162,19 +162,24 @@ export function ChatInputBar({
         )}
 
         {/* Submit button */}
-        <button
-          onClick={onManualSubmit}
-          disabled={!hasTranscript}
-          className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center transition-all duration-200 mt-0.5"
-          style={{
-            background: hasTranscript ? 'var(--blue)' : 'var(--fill-tertiary)',
-            color: hasTranscript ? '#fff' : 'var(--label-quaternary)',
-            cursor: hasTranscript ? 'pointer' : 'not-allowed',
-          }}
-          title="Submit answer"
-        >
-          <Send size={14} />
-        </button>
+        {(() => {
+          const canSubmit = isRecording || isThinking || hasTranscript
+          return (
+            <button
+              onClick={onManualSubmit}
+              disabled={!canSubmit}
+              className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center transition-all duration-200 mt-0.5"
+              style={{
+                background: canSubmit ? 'var(--blue)' : 'var(--fill-tertiary)',
+                color: canSubmit ? '#fff' : 'var(--label-quaternary)',
+                cursor: canSubmit ? 'pointer' : 'not-allowed',
+              }}
+              title="Submit answer"
+            >
+              <Send size={14} />
+            </button>
+          )
+        })()}
       </div>
 
       <p className="text-center mt-1.5" style={{ fontSize: '0.6rem', color: 'var(--label-tertiary)' }}>
