@@ -91,6 +91,7 @@ export function useProctoring(sessionId: string) {
       severity,
       payload
     }
+    console.info('[Proctoring Event Triggered]:', eventType, severity, payload)
     setState(prev => ({
       ...prev,
       isSecure: severity !== 'critical',
@@ -160,9 +161,8 @@ export function useProctoring(sessionId: string) {
 
     const handleVisibility = () => {
       if (document.hidden) {
-        if (!pastGrace(5000)) return
         lastTabSwitchTimeRef.current = Date.now()
-        if (canEmit('tab_switch', 10000)) {
+        if (canEmit('tab_switch', 3000)) {
           emitEvent('tab_switch', 'warning')
         }
       }
@@ -172,15 +172,14 @@ export function useProctoring(sessionId: string) {
     const handleBlur = () => {
       if (blurTimer) clearTimeout(blurTimer)
       if (document.hidden) return
-      if (!pastGrace(5000)) return
       blurTimer = setTimeout(() => {
         const now = Date.now()
-        if (!document.hasFocus() && !document.hidden && (now - lastTabSwitchTimeRef.current > 2000)) {
-          if (canEmit('window_blur', 15000)) {
+        if (!document.hasFocus() && !document.hidden && (now - lastTabSwitchTimeRef.current > 1000)) {
+          if (canEmit('window_blur', 5000)) {
             emitEvent('window_blur', 'warning')
           }
         }
-      }, 2500)
+      }, 600)
     }
     const handleFocus = () => {
       if (blurTimer) clearTimeout(blurTimer)
@@ -189,16 +188,15 @@ export function useProctoring(sessionId: string) {
     let lastWidth = window.innerWidth
     const handleResize = () => {
       const change = Math.abs(window.innerWidth - lastWidth)
-      if (change > 120 && canEmit('browser_resize', 15000)) {
+      if (change > 80 && canEmit('browser_resize', 5000)) {
         emitEvent('browser_resize', 'info', { from: lastWidth, to: window.innerWidth })
       }
       lastWidth = window.innerWidth
     }
 
     const handleFullscreenChange = () => {
-      if (!pastGrace(3000)) return
       if (!document.fullscreenElement && isActive && !isStoppingRef.current) {
-        if (canEmit('fullscreen_exit', 15000)) {
+        if (canEmit('fullscreen_exit', 5000)) {
           emitEvent('fullscreen_exit', 'warning')
         }
         document.documentElement.requestFullscreen().catch(() => {})
@@ -211,7 +209,7 @@ export function useProctoring(sessionId: string) {
       if (blockedKeys.includes(key)) {
         e.preventDefault()
         e.stopPropagation()
-        if (canEmit('keyboard_shortcut', 5000)) {
+        if (canEmit('keyboard_shortcut', 3000)) {
           emitEvent('keyboard_shortcut', 'warning', { key })
         }
       }
@@ -219,15 +217,15 @@ export function useProctoring(sessionId: string) {
 
     const handleCopy = (e: Event) => {
       e.preventDefault()
-      if (canEmit('copy_paste', 5000)) emitEvent('copy_paste', 'warning', { action: 'copy' })
+      if (canEmit('copy_paste', 3000)) emitEvent('copy_paste', 'warning', { action: 'copy' })
     }
     const handlePaste = (e: Event) => {
       e.preventDefault()
-      if (canEmit('copy_paste', 5000)) emitEvent('copy_paste', 'warning', { action: 'paste' })
+      if (canEmit('copy_paste', 3000)) emitEvent('copy_paste', 'warning', { action: 'paste' })
     }
     const handleCut = (e: Event) => {
       e.preventDefault()
-      if (canEmit('copy_paste', 5000)) emitEvent('copy_paste', 'warning', { action: 'cut' })
+      if (canEmit('copy_paste', 3000)) emitEvent('copy_paste', 'warning', { action: 'cut' })
     }
     const handleContextMenu = (e: Event) => e.preventDefault()
 
@@ -238,26 +236,23 @@ export function useProctoring(sessionId: string) {
       if (!video || video.readyState < 2 || video.paused) return
 
       // Run both detectors in parallel — they share the same video frame timestamp
-      // so there is no extra latency from running them together.
       const [mpCount, behavior] = await Promise.all([
         detectFaces(video),
         detectBehavior(video),
       ])
 
       // ── Face Absent / Multiple (BlazeFace) ──────────────────────────────
-      // MediaPipe FaceDetector — works on all browsers, skin tones, and lighting.
-      // Returns -1 while the WASM model is still loading; those ticks are skipped.
       if (mpCount !== -1) {
         if (mpCount === 0) {
           faceAbsentStrikesRef.current++
           faceMultipleStrikesRef.current = 0
-          if (faceAbsentStrikesRef.current >= 5 && canEmit('face_absent', 20000)) {
+          if (faceAbsentStrikesRef.current >= 2 && canEmit('face_absent', 5000)) {
             emitEvent('face_absent', 'warning', { reason: 'no_face_detected', detector: 'mediapipe' })
           }
         } else if (mpCount > 1) {
           faceMultipleStrikesRef.current++
           faceAbsentStrikesRef.current = 0
-          if (faceMultipleStrikesRef.current >= 5 && canEmit('face_multiple', 20000)) {
+          if (faceMultipleStrikesRef.current >= 2 && canEmit('face_multiple', 5000)) {
             emitEvent('face_multiple', 'warning', { count: mpCount, detector: 'mediapipe' })
           }
         } else {
@@ -267,13 +262,10 @@ export function useProctoring(sessionId: string) {
       }
 
       // ── Gaze Away (FaceLandmarker) ──────────────────────────────────────
-      // Candidate looking left/right toward a second screen or person.
-      // Requires BOTH eye blendshape AND head yaw to exceed threshold (dual-gate).
-      // Not flagged during startup grace window.
-      if (behavior !== null && pastGrace(5000)) {
+      if (behavior !== null) {
         if (behavior.gazeAway) {
           gazeAwayStrikesRef.current++
-          if (gazeAwayStrikesRef.current >= 4 && canEmit('gaze_away', 25000)) {
+          if (gazeAwayStrikesRef.current >= 2 && canEmit('gaze_away', 5000)) {
             emitEvent('gaze_away', 'warning', {
               yawDeg: Math.round(behavior.yawDeg),
               detector: 'mediapipe-landmarker'
@@ -284,13 +276,10 @@ export function useProctoring(sessionId: string) {
         }
 
         // ── Head Down (FaceLandmarker) ────────────────────────────────────
-        // Candidate looking down at desk notes or a phone.
-        // Requires BOTH eyeLookDown blendshape AND head pitch angle (dual-gate).
-        // Suppressed while AI is speaking — candidates naturally look down while thinking.
         const aiSpeaking = externalAiSpeakingRef.current?.current === true
         if (behavior.headDown && !aiSpeaking) {
           headDownStrikesRef.current++
-          if (headDownStrikesRef.current >= 4 && canEmit('head_down', 25000)) {
+          if (headDownStrikesRef.current >= 2 && canEmit('head_down', 5000)) {
             emitEvent('head_down', 'warning', {
               pitchDeg: Math.round(behavior.pitchDeg),
               detector: 'mediapipe-landmarker'
@@ -300,7 +289,7 @@ export function useProctoring(sessionId: string) {
           headDownStrikesRef.current = 0
         }
       }
-    }, 3000)
+    }, 1000)
 
 
     async function initAudio() {

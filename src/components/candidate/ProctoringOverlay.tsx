@@ -190,8 +190,8 @@ export function ProctoringOverlay({ violations, sessionId }: ProctoringOverlayPr
         </div>
       )}
 
-      {/* Top-Right Status Indicators */}
-      <div className="fixed top-4 right-4 z-50 flex items-center gap-2">
+      {/* Top-Right Status Indicators (Positioned below top header to avoid obscuring timer) */}
+      <div className="fixed top-16 right-4 z-50 flex items-center gap-2">
         {tabSwitchCount > 0 && (
           <div className="badge-orange flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full shadow-sm" title="Tab switch warnings">
             <Eye size={12} />

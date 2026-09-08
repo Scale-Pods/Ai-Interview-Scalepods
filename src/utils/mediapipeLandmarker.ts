@@ -38,16 +38,16 @@ export interface BehaviorResult {
 // ─── Thresholds ──────────────────────────────────────────────────────────────
 
 /** Blendshape score (0–1) above which an eye is considered "looking outward" */
-const GAZE_BLEND_THRESHOLD = 0.45
+const GAZE_BLEND_THRESHOLD = 0.30
 
 /** Head yaw angle (degrees) beyond which gaze_away is confirmed */
-const GAZE_YAW_THRESHOLD = 28
+const GAZE_YAW_THRESHOLD = 18
 
 /** Blendshape score above which eye is considered "looking down" */
-const HEAD_DOWN_BLEND_THRESHOLD = 0.45
+const HEAD_DOWN_BLEND_THRESHOLD = 0.30
 
 /** Head pitch angle (degrees) below which head_down is confirmed (negative = chin down) */
-const HEAD_DOWN_PITCH_THRESHOLD = -22
+const HEAD_DOWN_PITCH_THRESHOLD = -14
 
 // ─── Singleton state ──────────────────────────────────────────────────────────
 
@@ -179,9 +179,9 @@ export async function detectBehavior(video: HTMLVideoElement): Promise<BehaviorR
     const headTurnedSideways = Math.abs(yawDeg) > GAZE_YAW_THRESHOLD
     const headTiltedDown = pitchDeg < HEAD_DOWN_PITCH_THRESHOLD
 
-    // Both gates must be true to reduce false positives from natural eye movement
-    const gazeAway = eyeLookingOut && headTurnedSideways
-    const headDown = eyeLookingDown && headTiltedDown
+    // Trigger if head angle is turned OR eye blendshape indicates looking away
+    const gazeAway = headTurnedSideways || (eyeLookingOut && Math.abs(yawDeg) > 8)
+    const headDown = headTiltedDown || (eyeLookingDown && pitchDeg < -6)
 
     return { gazeAway, headDown, faceCount, yawDeg, pitchDeg }
   } catch (err) {

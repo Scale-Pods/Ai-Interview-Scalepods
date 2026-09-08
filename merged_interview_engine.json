@@ -1,0 +1,139 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "interview-engine",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "ebf28fa8-48f5-4333-83fe-a61b8d957b8c",
+      "name": "Webhook - Interview Engine",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        -800,
+        2800
+      ],
+      "webhookId": "91a84cfc-6272-4c11-bfd7-b1d0352e609f"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ═══════════════════════════════════════════════════════════════\n// BUILD UNIFIED PROMPT — Merged Interview Engine\n// ═══════════════════════════════════════════════════════════════\n// Replaces 3 separate code nodes (analyze-answer, generate-turn,\n// targeted-followup) with a single prompt that evaluates the\n// candidate's answer AND generates the next interviewer turn in\n// one API call.\n// ═══════════════════════════════════════════════════════════════\n\nconst input = $input.first().json.body || $input.first().json;\n\nconst {\n  question,\n  answer,\n  resumeText,\n  jdText,\n  history,\n  blueprint,\n  competencyIds,\n  questionType = 'technical',\n  isAlreadyFollowUp = false,\n  analysis,\n  planItem,\n} = input;\n\nconst truncate = (text, max) =>\n  !text ? '' : text.length > max ? `${text.slice(0, max)}...[truncated]` : text;\n\n// ─── History ──────────────────────────────────────────────────\nconst historyArr = history || [];\nconst questionsAsked = historyArr.filter(item => item.type !== 'follow_up').length;\nconst recentHistory = historyArr.slice(-4);\nconst historyText = recentHistory.length\n  ? recentHistory\n      .map((item, i) => `Q${i + 1}: ${item.question}\\nA${i + 1}: ${item.answer || '(no answer)'}`)\n      .join('\\n\\n')\n  : 'None — this is the opening turn.';\n\nconst lastItem = historyArr.length ? historyArr[historyArr.length - 1] : null;\n\n// ─── Competencies ─────────────────────────────────────────────\nconst targetedCompetencies = (blueprint?.competencies || []).filter(item =>\n  (competencyIds || []).includes(item.id)\n);\n\n// ─── Word count & length note ─────────────────────────────────\nconst wordCount = (answer || '').trim().split(/\\s+/).filter(Boolean).length;\nconst hasAnswer = !!(answer && answer.trim() && answer.trim() !== '(no answer)');\nconst lengthNote = !hasAnswer\n  ? ''\n  : wordCount < 15\n    ? `The answer is very short (${wordCount} words). Honest uncertainty must advance, not trigger a follow-up.`\n    : wordCount < 40\n      ? `The answer is short (${wordCount} words). Assess whether it still provides enough relevant evidence.`\n      : '';\n\n// ─── Focus instruction (from plan or fallback) ───────────────\nconst extractedTools = analysis?.extractedTools || [];\nlet focusInstruction = '';\nlet questionTypeTarget = questionType || 'technical';\n\nif (planItem) {\n  questionTypeTarget = planItem.question_type || 'technical';\n\n  if (planItem.category === 'gap_probe') {\n    const gap = planItem.gap_ref;\n    focusInstruction = `CATEGORY: gap_probe\nGap to probe: \"${gap?.description || planItem.objective}\"\nApproach: \"${gap?.probe_direction || \"Ask how the candidate's background transfers to this area.\"}\"\nTone: curious and warm, never accusatory.`;\n\n  } else if (planItem.category === 'problem_solving') {\n    focusInstruction = `CATEGORY: problem_solving\nObjective: ${planItem.objective || 'Test practical reasoning and decision-making.'}\nAsk one real-world scenario or trade-off question.\nUse formats such as \"How would you approach...\" or \"Walk me through how you would handle...\".\nDo not ask for a definition or memorised explanation.`;\n\n  } else if (planItem.category === 'cultural') {\n    focusInstruction = `CATEGORY: cultural\nObjective: ${planItem.objective || 'Understand work style, collaboration, and team fit.'}\nAsk about one concrete situation, preference, or working style.\nUse formats such as \"Tell me about a time when...\" or \"How do you typically...\".`;\n\n  } else {\n    const tool = planItem.target_tool || 'the required skill';\n    const verificationMode = planItem.verification_mode || 'baseline_check';\n    const matchingTool = extractedTools.find(\n      item => item.name?.toLowerCase() === tool.toLowerCase()\n    );\n    const resumeContext = matchingTool?.resume_context || '';\n\n    if (verificationMode === 'verify_claim') {\n      focusInstruction = `CATEGORY: ${planItem.category} - VERIFY CLAIM\nTool: \"${tool}\"\nCandidate resume context: \"${resumeContext || 'Listed on resume'}\"\nObjective: ${planItem.objective}\n\nAsk about one specific real experience:\n- a decision they made,\n- a problem they solved,\n- an implementation detail,\n- or a trade-off they navigated using ${tool}.\n\nDo not ask a vague question such as \"Tell me about your experience with ${tool}.\"`;\n\n    } else {\n      focusInstruction = `CATEGORY: ${planItem.category} - BASELINE CHECK\nTool: \"${tool}\"\nThis skill is required by the JD but is not evident in the resume.\nObjective: ${planItem.objective}\n\nAsk one accessible awareness question about:\n- what problem ${tool} solves,\n- when they would use it,\n- or how it fits into a practical workflow.\n\nDo not ask deep implementation questions.`;\n    }\n  }\n\n} else {\n  const fallbackStages = [\n    { instruction: 'Ask one foundational question about the primary technology required for the role.', type: 'technical' },\n    { instruction: 'Ask one question about a core principle or trade-off in a key JD technology.', type: 'technical' },\n    { instruction: 'Ask one question about an engineering design decision relevant to the role.', type: 'technical' },\n    { instruction: 'Ask one hands-on implementation or debugging scenario using a key tool.', type: 'technical' },\n    { instruction: 'Ask about one specific project from the resume and a decision made within it.', type: 'technical' },\n    { instruction: 'Ask how one resume experience applies to a JD requirement.', type: 'technical' },\n    { instruction: \"Ask how the candidate's background transfers to a JD gap or unfamiliar area.\", type: 'situational' },\n    { instruction: 'Ask one practical, scenario-based problem-solving question.', type: 'situational' },\n    { instruction: 'Ask one question about collaboration, feedback, or handling disagreement.', type: 'cultural' },\n    { instruction: 'Ask one question about work environment, adaptability, or role motivation.', type: 'cultural' },\n  ];\n  const stageIndex = Math.min(questionsAsked, fallbackStages.length - 1);\n  focusInstruction = fallbackStages[stageIndex].instruction;\n  questionTypeTarget = fallbackStages[stageIndex].type;\n}\n\n// ─── Insufficiency strategy block ─────────────────────────────\nconst insufficiencyStrategyBlock = `Strategy by insufficiency reason:\n- lacks_depth: probe the specific mechanism, process, or decision behind what they already said — go one level deeper into something they mentioned.\n- lacks_evidence: ask for a concrete outcome, metric, or result tied to the claim they made.\n- vague: ask them to specify exactly which of several plausible things they meant, referencing the ambiguity directly.`;\n\n// ═══════════════════════════════════════════════════════════════\n// BUILD THE UNIFIED PROMPT\n// ═══════════════════════════════════════════════════════════════\nlet prompt;\n\nif (hasAnswer) {\n  // ─── FULL PIPELINE: Evaluate answer + Generate next turn ────\n  prompt = `You are Alex, a warm and professional technical recruiter conducting a live interview.\n\nPerform two tasks in sequence: (1) evaluate the candidate's answer, then (2) generate your next interviewer turn based on that evaluation.\n\n━━━━━━━━━━━━ CONTEXT ━━━━━━━━━━━━\n\nCurrent question:\n\"${question}\"\n\nQuestion type: ${questionType}\nIs this question already a follow-up: ${isAlreadyFollowUp ? 'yes' : 'no'}\n\nCandidate answer:\n\"${answer}\"\n\nResume:\n\"\"\"\n${truncate(resumeText, 2000)}\n\"\"\"\n\nJob description:\n\"\"\"\n${truncate(jdText, 1200)}\n\"\"\"\n\nRecent interview history:\n${historyText}\n\nTarget competencies:\n${targetedCompetencies.length ? JSON.stringify(targetedCompetencies, null, 2) : 'None specified.'}\n\n${lengthNote}\n\n━━━━━━━━━━━━ TASK 1: EVALUATE THE ANSWER ━━━━━━━━━━━━\n\nHARD CONSTRAINT (check first):\nIf \"Is this question already a follow-up\" is yes, OR question type is not \"technical\", recommended_action MUST be \"advance\". Skip the decision logic below.\n\nOtherwise, for a primary technical question, choose exactly one outcome:\n\nadvance:\n- Sufficient primary technical answer.\n- Honest uncertainty, refusal, or a short but relevant answer.\n- Answer is \"(no answer)\".\n- When uncertain.\n\nfollow_up:\n- Answer is relevant but materially insufficient — engages with the question but avoids the requested mechanics, trade-offs, or real-world specifics.\n- Probe exactly one missing technical detail.\n\nrephrase_primary:\n- Entire response asks for clarification, says they don't understand, or is clearly off-topic.\n\nCalibration:\n- \"I don't know\" → advance.\n- Partial answer with genuine technical evidence → usually advance.\n- Textbook definition avoiding mechanics/trade-offs/real-world usage → may use follow_up.\n- Any genuine attempt to address the question → not off-topic.\n- If uncertain → advance.\n\n━━━━━━━━━━━━ TASK 2: GENERATE NEXT TURN ━━━━━━━━━━━━\n\nBased on your Task 1 evaluation, generate the interviewer's next turn.\n\nFOCUS FOR NEXT QUESTION (used when recommended_action is \"advance\"):\n${focusInstruction || 'Ask a foundational technical question grounded in the job description.'}\n\n--- INTERVIEWER_TEXT RULES ---\ninterviewer_text is an acknowledgement only.\n- One or two natural sentences. No question, no question mark, no question wording.\n- Do not include, paraphrase, preview, or hint at question_text.\n- Do not score, criticise, summarise, or reveal internal assessment.\n- Do not use generic evaluative praise (great, excellent, perfect, wonderful, fantastic, amazing).\n- For advance: acknowledge neutrally, transition smoothly. Example: \"Thanks for walking me through that.\"\n- For follow_up: acknowledge neutrally, do not imply insufficiency. Example: \"Got it — I'd like to dig into one part of that a bit more.\"\n- For rephrase_primary: acknowledge without blame. Example: \"No problem — let me ask that a different way.\"\n- For short answers or honest uncertainty: remain low-pressure and respectful.\n\n--- QUESTION_TEXT RULES ---\nquestion_text must contain exactly one question with no acknowledgement, transition, praise, or preamble.\n\nIf recommended_action is \"advance\":\n- Generate one specific question from the focus instruction above.\n- Ground it in the resume and job description.\n- Do not combine multiple questions.\n- Do not invent experience, projects, tools, or metrics not present in the resume or JD.\n\nIf recommended_action is \"follow_up\":\n- Target exactly one missing technical detail from your evaluation.\n- Ground the question in something from the candidate's answer (a claim, phrase, tool, decision, project, or implementation detail).\n- Do not repeat or broadly reword the original question.\n- Do not use generic wording: \"tell me more\", \"go deeper\", \"elaborate\", \"be more specific\", \"give an example\", or equivalents.\n- Name the specific detail being asked about.\n${insufficiencyStrategyBlock}\n- Example — if candidate said \"I used caching to speed things up\":\n  ✅ \"What did you use for the caching layer, and what made you choose it over the alternatives?\"\n  ❌ \"Can you elaborate on the caching approach you mentioned?\"\n\nIf recommended_action is \"rephrase_primary\":\n- Preserve the same competency being evaluated.\n- Use clear, concrete, accessible language.\n- Do not make the technical standard easier; only make the wording easier to understand.\n- Do not introduce tools, projects, metrics, or scenarios not grounded in the original question.\n\n━━━━━━━━━━━━ OUTPUT ━━━━━━━━━━━━\n\nField rules for non-relevant fields:\n- advance → insufficiency_reason, follow_up_direction, rephrase_direction all null\n- follow_up → rephrase_direction null\n- rephrase_primary → insufficiency_reason, follow_up_direction null\n\nReturn ONLY valid JSON:\n{\n  \"authenticity_signal\": \"genuine\" | \"vague\" | \"suspicious\" | \"inconsistent\",\n  \"depth_signal\": \"deep\" | \"surface\" | \"empty\",\n  \"competency_evidence\": [{\"competency\": \"...\", \"evidence\": \"...\"}],\n  \"note\": \"Balanced recruiter note, max two sentences.\",\n  \"recommended_action\": \"advance\" | \"follow_up\" | \"rephrase_primary\",\n  \"confidence\": 0.0,\n  \"follow_up_prompted\": true | false,\n  \"answer_was_irrelevant\": true | false,\n  \"insufficiency_reason\": \"lacks_depth\" | \"lacks_evidence\" | \"vague\" | \"irrelevant\" | null,\n  \"follow_up_direction\": \"One specific missing detail, or null.\",\n  \"rephrase_direction\": \"How to restate the question, or null.\",\n  \"interviewer_text\": \"Acknowledgement only. No question marks.\",\n  \"question_text\": \"One question only. No acknowledgement.\"\n}`;\n\n} else {\n  // ─── FIRST TURN: No answer to evaluate — generate opening ──\n  prompt = `You are Alex, a warm and professional technical recruiter conducting a live interview.\n\nGenerate the next interviewer turn.\n\n${lastItem ? `Candidate's most recent answer:\\n\"${lastItem.answer || '(no previous answer)'}\"` : 'This is the first question of the interview.'}\n\nFocus for the question:\n${focusInstruction || 'Ask a foundational technical question grounded in the job description.'}\n\nCandidate resume:\n\"\"\"\n${truncate(resumeText, 1800)}\n\"\"\"\n\nJob description:\n\"\"\"\n${truncate(jdText, 1000)}\n\"\"\"\n\nRecent interview history:\n${historyText}\n\n--- INTERVIEWER_TEXT RULES ---\ninterviewer_text is a brief, warm opening or transition.\n- One or two natural sentences. No question, no question mark.\n${!lastItem\n    ? '- For the first question: a brief, warm greeting. Example: \"Thanks for joining — let\\'s get started.\"'\n    : '- Acknowledge the previous answer neutrally and transition smoothly.'}\n- Do not use generic evaluative praise (great, excellent, perfect, wonderful, fantastic, amazing).\n\n--- QUESTION_TEXT RULES ---\n- Exactly one question. No acknowledgement, transition, or preamble.\n- Ground it in the resume and job description.\n- Do not combine multiple questions.\n- Do not invent experience, projects, tools, or metrics not present in the resume or JD.\n\nReturn ONLY valid JSON:\n{\n  \"interviewer_text\": \"Opening or transition. No question marks.\",\n  \"question_text\": \"One question only. No acknowledgement.\"\n}`;\n}\n\n// ─── Computed fields (attached after API call by Parse node) ──\nconst resolvedQuestionType = questionTypeTarget;\nconst resolvedShouldContinue = true;\n\nreturn [{ json: { prompt, hasAnswer, resolvedQuestionType, resolvedShouldContinue } }];\n"
+      },
+      "id": "a1b2c3d4-1111-4aaa-bbbb-000000000001",
+      "name": "Build Unified Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -560,
+        2800
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{\n  {\n    \"model\": \"gpt-4.1-mini\",\n    \"messages\": [{ \"role\": \"user\", \"content\": $json.prompt }],\n    \"response_format\": { \"type\": \"json_object\" }\n  }\n}}",
+        "options": {}
+      },
+      "id": "a1b2c3d4-2222-4aaa-bbbb-000000000002",
+      "name": "OpenAI - Unified Call",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -320,
+        2800
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "WlHKo4N02BhjQPJK",
+          "name": "Header Auth account 7"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ═══════════════════════════════════════════════════════════════\n// PARSE & ENRICH — Post-OpenAI response processing\n// ═══════════════════════════════════════════════════════════════\n// Parses the LLM response and adds deterministic computed fields\n// that should not be left to the model (turn_type, question_type,\n// should_continue).\n//\n// For first-turn responses (no answer was evaluated), fills in\n// default analysis values so the response shape is always\n// consistent regardless of whether analysis was performed.\n// ═══════════════════════════════════════════════════════════════\n\nconst content = JSON.parse($input.first().json.choices[0].message.content);\nconst buildNode = $node[\"Build Unified Prompt\"];\nconst hasAnswer = buildNode.json.hasAnswer;\n\nif (hasAnswer) {\n  // ─── Full pipeline response: add computed fields ────────────\n  content.turn_type = content.recommended_action === 'advance' ? 'question' : 'follow_up';\n  content.question_type = buildNode.json.resolvedQuestionType;\n  content.should_continue = buildNode.json.resolvedShouldContinue;\n} else {\n  // ─── First turn response: fill default analysis values ──────\n  content.authenticity_signal = null;\n  content.depth_signal = null;\n  content.competency_evidence = [];\n  content.note = null;\n  content.recommended_action = 'advance';\n  content.confidence = 1.0;\n  content.follow_up_prompted = false;\n  content.answer_was_irrelevant = false;\n  content.insufficiency_reason = null;\n  content.follow_up_direction = null;\n  content.rephrase_direction = null;\n  content.turn_type = 'question';\n  content.question_type = buildNode.json.resolvedQuestionType;\n  content.should_continue = buildNode.json.resolvedShouldContinue;\n}\n\nreturn [{ json: content }];\n"
+      },
+      "id": "a1b2c3d4-3333-4aaa-bbbb-000000000003",
+      "name": "Parse & Enrich",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -80,
+        2800
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "a1b2c3d4-4444-4aaa-bbbb-000000000004",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        160,
+        2800
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook - Interview Engine": {
+      "main": [
+        [
+          {
+            "node": "Build Unified Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Unified Prompt": {
+      "main": [
+        [
+          {
+            "node": "OpenAI - Unified Call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI - Unified Call": {
+      "main": [
+        [
+          {
+            "node": "Parse & Enrich",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse & Enrich": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "11e350345aae172743fe2665ba36f76304fbd6b68282474d7d08206f6a010061"
+  }
+}
